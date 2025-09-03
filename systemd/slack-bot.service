@@ -1,0 +1,26 @@
+[Unit]
+Description=Slack Bot (TypeScript, Bolt)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# Adjust User/Group and WorkingDirectory to your deployment path
+User=root
+Group=root
+WorkingDirectory=/root/slack-bot-ts
+Environment=NODE_ENV=production
+
+# Use a small wrapper that builds if needed and runs the bot
+ExecStart=/usr/bin/env bash /root/slack-bot-ts/scripts/run-prod.sh
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# Make logs available via: journalctl -u slack-bot -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
