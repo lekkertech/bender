@@ -142,38 +142,79 @@ export function registerHandlers(app: App, cfg: Config) {
       const { date } = localDayInfo(tsSeconds);
       const { start, end } = weekStartEnd(date);
 
-      // Compute totals and determine current king(s) (ties allowed)
+      // Compute week-to-date leaderboard and render nicely via Block Kit (reply in-channel, not thread)
       const leaderboard = db.weeklyTotals(start, end);
-      const lines: string[] = [];
-      lines.push('Boom Game — Leaderboard (week-to-date)');
-      lines.push(`${start} to ${end}`);
+
+      // Fallback plain text for clients that don't render blocks
+      const fallback: string[] = [];
+      const title = 'Boom Game — Leaderboard (week-to-date)';
+      const rangeText = `${start} to ${end}`;
+      fallback.push(title);
+      fallback.push(rangeText);
+
+      const blocks: any[] = [
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: 'Boom Game — Leaderboard (week-to-date)', emoji: true },
+        },
+        {
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: `*${start}* → *${end}*` }],
+        },
+        { type: 'divider' },
+      ];
+
+      // Helper for medal/position label
+      const posLabel = (i: number) =>
+        i === 1 ? ':first_place_medal:' : i === 2 ? ':second_place_medal:' : i === 3 ? ':third_place_medal:' : `${i}.`;
 
       if (!leaderboard.length) {
-        lines.push('No results yet this week.');
+        const noData = 'No results yet this week.';
+        fallback.push(noData);
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: noData },
+        });
       } else {
         const top = leaderboard.slice(0, 10);
         let rank = 1;
+        const lines: string[] = [];
         for (const row of top) {
-          lines.push(`${rank}. <@${row.user_id}> — ${row.points} pt${row.points === 1 ? '' : 's'}`);
+          lines.push(`${posLabel(rank)} <@${row.user_id}> — *${row.points}* pt${row.points === 1 ? '' : 's'}`);
+          fallback.push(`${rank}. <@${row.user_id}> — ${row.points} pt${row.points === 1 ? '' : 's'}`);
           rank++;
         }
-        // Kings appended from last crowned week below.
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: lines.join('\n') },
+        });
       }
 
       // Append persisted king(s) from last crowned week (Friday after boom). Falls back to none.
       const crown = db.getLatestCrown();
-      lines.push('');
+      blocks.push({ type: 'divider' });
       if (crown && crown.winners.length) {
-        lines.push(`Current king${crown.winners.length > 1 ? 's' : ''}: ${crown.winners.map((u: string) => `<@${u}>`).join(', ')} — ${crown.points} pt${crown.points === 1 ? '' : 's'}`);
+        const kingsText = `:crown: Current king${crown.winners.length > 1 ? 's' : ''}: ${crown.winners
+          .map((u: string) => `<@${u}>`)
+          .join(', ')} — *${crown.points}* pt${crown.points === 1 ? '' : 's'}`;
+        fallback.push('');
+        fallback.push(kingsText.replace(':crown: ', ''));
+        blocks.push({
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: kingsText }],
+        });
       } else {
-        lines.push('Current king(s): none crowned yet');
-      }
-      // Respect default reply mode; prefer thread reply when configured
-      const post: any = { channel: ev.channel, text: lines.join('\n') };
-      if (cfg.defaultReplyMode === 'thread') {
-        post.thread_ts = ev.thread_ts || ev.ts;
+        const none = ':crown: Current king(s): none crowned yet';
+        fallback.push('');
+        fallback.push('Current king(s): none crowned yet');
+        blocks.push({
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: none }],
+        });
       }
 
+      // Always post in-channel (no thread) for the leaderboard command
+      const post: any = { channel: ev.channel, text: fallback.join('\n'), blocks };
       await client.chat.postMessage(post);
     } catch (err) {
       logger?.error(err);
