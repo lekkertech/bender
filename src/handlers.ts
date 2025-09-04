@@ -183,12 +183,12 @@ export function registerHandlers(app: App, cfg: Config) {
         { type: 'divider' },
       ];
 
-      // Helper for numeric position label using number emoji (avoids medal-only for top 3)
+      // Helper for position label: medals for top 3, numeric emoji thereafter
       const posLabel = (i: number) => {
+        if (i === 1) return ':first_place_medal:';
+        if (i === 2) return ':second_place_medal:';
+        if (i === 3) return ':third_place_medal:';
         const map: Record<number, string> = {
-          1: ':one:',
-          2: ':two:',
-          3: ':three:',
           4: ':four:',
           5: ':five:',
           6: ':six:',
