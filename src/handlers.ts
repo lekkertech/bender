@@ -215,7 +215,7 @@ export function registerHandlers(app: App, cfg: Config) {
       blocks.push({ type: 'divider' });
       if (crown && crown.winners.length) {
         const kingNames = await Promise.all(crown.winners.map((u: string) => getDisplayName(u)));
-        const kingsText = `:crown: Current king${kingNames.length > 1 ? 's' : ''}: ${kingNames.join(', ')} — *${crown.points}* pt${crown.points === 1 ? '' : 's'}`;
+        const kingsText = `:crown: Current king${kingNames.length > 1 ? 's' : ''}: ${kingNames.join(', ')}`;
         fallback.push('');
         fallback.push(kingsText.replace(':crown: ', ''));
         blocks.push({
