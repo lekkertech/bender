@@ -145,6 +145,25 @@ export function registerHandlers(app: App, cfg: Config) {
       // Compute week-to-date leaderboard and render nicely via Block Kit (reply in-channel, not thread)
       const leaderboard = db.weeklyTotals(start, end);
 
+      // Resolve Slack display names to avoid notifying users (no <@...> mentions)
+      const nameCache = new Map<string, string>();
+      const getDisplayName = async (uid: string): Promise<string> => {
+        if (nameCache.has(uid)) return nameCache.get(uid)!;
+        try {
+          const info = await client.users.info({ user: uid });
+          const user = (info as any)?.user;
+          const profile = user?.profile || {};
+          const name: string =
+            (profile.display_name && String(profile.display_name).trim()) ||
+            (profile.real_name && String(profile.real_name).trim()) ||
+            (user?.name ? String(user.name) : uid);
+          nameCache.set(uid, name);
+          return name;
+        } catch {
+          return uid;
+        }
+      };
+
       // Fallback plain text for clients that don't render blocks
       const fallback: string[] = [];
       const title = 'Boom Game — Leaderboard (week-to-date)';
@@ -177,13 +196,14 @@ export function registerHandlers(app: App, cfg: Config) {
         });
       } else {
         const top = leaderboard.slice(0, 10);
-        let rank = 1;
-        const lines: string[] = [];
-        for (const row of top) {
-          lines.push(`${posLabel(rank)} <@${row.user_id}> — *${row.points}* pt${row.points === 1 ? '' : 's'}`);
-          fallback.push(`${rank}. <@${row.user_id}> — ${row.points} pt${row.points === 1 ? '' : 's'}`);
-          rank++;
-        }
+        const lines: string[] = await Promise.all(
+          top.map(async (row, idx) => {
+            const rank = idx + 1;
+            const name = await getDisplayName(row.user_id);
+            fallback.push(`${rank}. ${name} — ${row.points} pt${row.points === 1 ? '' : 's'}`);
+            return `${posLabel(rank)} ${name} — *${row.points}* pt${row.points === 1 ? '' : 's'}`;
+          }),
+        );
         blocks.push({
           type: 'section',
           text: { type: 'mrkdwn', text: lines.join('\n') },
@@ -194,9 +214,8 @@ export function registerHandlers(app: App, cfg: Config) {
       const crown = db.getLatestCrown();
       blocks.push({ type: 'divider' });
       if (crown && crown.winners.length) {
-        const kingsText = `:crown: Current king${crown.winners.length > 1 ? 's' : ''}: ${crown.winners
-          .map((u: string) => `<@${u}>`)
-          .join(', ')} — *${crown.points}* pt${crown.points === 1 ? '' : 's'}`;
+        const kingNames = await Promise.all(crown.winners.map((u: string) => getDisplayName(u)));
+        const kingsText = `:crown: Current king${kingNames.length > 1 ? 's' : ''}: ${kingNames.join(', ')} — *${crown.points}* pt${crown.points === 1 ? '' : 's'}`;
         fallback.push('');
         fallback.push(kingsText.replace(':crown: ', ''));
         blocks.push({
