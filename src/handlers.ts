@@ -183,9 +183,22 @@ export function registerHandlers(app: App, cfg: Config) {
         { type: 'divider' },
       ];
 
-      // Helper for medal/position label
-      const posLabel = (i: number) =>
-        i === 1 ? ':first_place_medal:' : i === 2 ? ':second_place_medal:' : i === 3 ? ':third_place_medal:' : `${i}.`;
+      // Helper for numeric position label using number emoji (avoids medal-only for top 3)
+      const posLabel = (i: number) => {
+        const map: Record<number, string> = {
+          1: ':one:',
+          2: ':two:',
+          3: ':three:',
+          4: ':four:',
+          5: ':five:',
+          6: ':six:',
+          7: ':seven:',
+          8: ':eight:',
+          9: ':nine:',
+          10: ':keycap_ten:',
+        };
+        return map[i] || `${i}.`;
+      };
 
       if (!leaderboard.length) {
         const noData = 'No results yet this week.';
