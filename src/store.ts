@@ -11,6 +11,7 @@ type StoreData = {
   counts: Record<string, Record<Game, number>>; // date -> game -> count (valid posts in window)
   daily_announced: Record<string, string>; // date -> ISO timestamp
   weekly_crowned: Record<string, string>; // week_key -> ISO timestamp
+  weekly_kings?: Record<string, { winners: string[]; points: number; crowned_at: string }>; // week_key -> crown details
   weekly_adjustments?: Record<string, Record<string, number>>; // week_key -> user_id -> baseline points
 };
 
@@ -19,6 +20,7 @@ const initialData = (): StoreData => ({
   counts: {},
   daily_announced: {},
   weekly_crowned: {},
+  weekly_kings: {},
 });
 
 export class Store {
@@ -108,6 +110,38 @@ export class Store {
     this.flush();
   }
 
+  // Persist crowned king(s) for the given ISO week.
+  // winners may include multiple user_ids in case of a tie; points are the shared winning points.
+  setCrown(weekKey: string, winners: string[], points: number) {
+    if (!this.data.weekly_kings) this.data.weekly_kings = {};
+    this.data.weekly_kings[weekKey] = {
+      winners: [...winners],
+      points,
+      crowned_at: DateTime.now().toISO()!,
+    };
+    this.flush();
+  }
+
+  // Returns the most recently crowned week based on crowned_at timestamp.
+  getLatestCrown(): { weekKey: string; winners: string[]; points: number; crowned_at: string } | null {
+    const wk = this.data.weekly_kings;
+    if (!wk || !Object.keys(wk).length) return null;
+    let latest: { weekKey: string; winners: string[]; points: number; crowned_at: string } | null = null;
+    for (const [key, val] of Object.entries(wk)) {
+      if (!val || !val.crowned_at) continue;
+      if (!latest) {
+        latest = { weekKey: key, ...val };
+        continue;
+      }
+      const a = DateTime.fromISO(val.crowned_at);
+      const b = DateTime.fromISO(latest.crowned_at);
+      if (a > b) {
+        latest = { weekKey: key, ...val };
+      }
+    }
+    return latest;
+  }
+
   weeklyTotals(startDate: string, endDate: string): Array<{ user_id: string; points: number }>{
     const res = new Map<string, number>();
     // Seed baselines if present for the week
@@ -157,6 +191,9 @@ function normalizeData(raw: Partial<StoreData & Record<string, unknown>>): Store
     counts: isObject(raw.counts) ? (raw.counts as Record<string, Record<Game, number>>) : base.counts,
     daily_announced: isObject(raw.daily_announced) ? (raw.daily_announced as Record<string, string>) : base.daily_announced,
     weekly_crowned: isObject(raw.weekly_crowned) ? (raw.weekly_crowned as Record<string, string>) : base.weekly_crowned,
+    weekly_kings: isObject((raw as any).weekly_kings)
+      ? ((raw as any).weekly_kings as Record<string, { winners: string[]; points: number; crowned_at: string }>)
+      : {},
     weekly_adjustments: isObject(raw.weekly_adjustments)
       ? (raw.weekly_adjustments as Record<string, Record<string, number>>)
       : undefined,

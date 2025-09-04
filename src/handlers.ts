@@ -106,6 +106,8 @@ export function registerHandlers(app: App, cfg: Config) {
           if (leaderboard.length) {
             const topPoints = leaderboard[0].points;
             const winners = leaderboard.filter((r) => r.points === topPoints).map((r) => r.user_id);
+            // Persist crowned winners for this week (king definition: top after Friday boom)
+            db.setCrown(wk, winners, topPoints);
             const crownLines = [
               `👑 Boom Game — Weekly Crown (${start} to ${end})`,
               `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
@@ -120,11 +122,59 @@ export function registerHandlers(app: App, cfg: Config) {
     }
   });
 
-  // Keep mention events visible in logs for now
-  app.event('app_mention', async ({ event, logger }) => {
+  // Mention command: "@bot leaderboard" → print week-to-date leaderboard + current king(s)
+  app.event('app_mention', async ({ event, client, logger }) => {
     try {
-      if (!inAllowedChannel(cfg, (event as any).channel)) return;
-      logger?.debug?.({ channel: (event as any).channel, text: (event as any).text }, 'app_mention received');
+      const ev = event as any;
+      if (!inAllowedChannel(cfg, ev.channel)) return;
+
+      // Strip all mention tokens like <@U123ABC> and trim; trigger only on exact "leaderboard" (case-insensitive)
+      const cleaned = String(ev.text || '').replace(/<@[^>]+>/g, '').trim();
+      if (cleaned.toLowerCase() !== 'leaderboard') {
+        // Keep mention events visible in logs for non-command mentions
+        logger?.debug?.({ channel: ev.channel, text: ev.text }, 'app_mention ignored (not leaderboard)');
+        return;
+      }
+
+      // Derive local date from event timestamp, then compute ISO-week Mon–Fri range
+      const tsStr = String(ev.ts || '0');
+      const tsSeconds = Math.floor(Number(tsStr.split('.')[0] || '0'));
+      const { date } = localDayInfo(tsSeconds);
+      const { start, end } = weekStartEnd(date);
+
+      // Compute totals and determine current king(s) (ties allowed)
+      const leaderboard = db.weeklyTotals(start, end);
+      const lines: string[] = [];
+      lines.push('Boom Game — Leaderboard (week-to-date)');
+      lines.push(`${start} to ${end}`);
+
+      if (!leaderboard.length) {
+        lines.push('No results yet this week.');
+      } else {
+        const top = leaderboard.slice(0, 10);
+        let rank = 1;
+        for (const row of top) {
+          lines.push(`${rank}. <@${row.user_id}> — ${row.points} pt${row.points === 1 ? '' : 's'}`);
+          rank++;
+        }
+        // Kings appended from last crowned week below.
+      }
+
+      // Append persisted king(s) from last crowned week (Friday after boom). Falls back to none.
+      const crown = db.getLatestCrown();
+      lines.push('');
+      if (crown && crown.winners.length) {
+        lines.push(`Current king${crown.winners.length > 1 ? 's' : ''}: ${crown.winners.map((u: string) => `<@${u}>`).join(', ')} — ${crown.points} pt${crown.points === 1 ? '' : 's'}`);
+      } else {
+        lines.push('Current king(s): none crowned yet');
+      }
+      // Respect default reply mode; prefer thread reply when configured
+      const post: any = { channel: ev.channel, text: lines.join('\n') };
+      if (cfg.defaultReplyMode === 'thread') {
+        post.thread_ts = ev.thread_ts || ev.ts;
+      }
+
+      await client.chat.postMessage(post);
     } catch (err) {
       logger?.error(err);
     }
