@@ -17,7 +17,10 @@ RestartSec=5
 KillSignal=SIGINT
 TimeoutStopSec=20
 
-# Make logs available via: journalctl -u slack-bot -f
+# Log only to journald (not syslog); usable with: journalctl -u slack-bot -f
+# If your system forwards journald to syslog via rsyslog, use SyslogIdentifier
+# to filter/drop these entries on the syslog side.
+SyslogIdentifier=slack-bot
 StandardOutput=journal
 StandardError=journal
 
