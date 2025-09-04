@@ -3,6 +3,13 @@
   "counts": {},
   "daily_announced": {},
   "weekly_crowned": {},
+  "weekly_kings": {
+    "2025-W36": {
+      "winners": ["U09191SGXCK"],
+      "points": 27,
+      "crowned_at": "2025-09-04T07:00:50.000Z"
+    }
+  },
   "weekly_adjustments": {
     "2025-W36": {
       "U09191SGXCK": 27,
