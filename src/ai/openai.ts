@@ -28,102 +28,59 @@ export class OpenAIClient {
     const maxTokens = opts.maxTokens ?? 256;
 
     const start = Date.now();
-    let lastErr: unknown = null;
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        // Primary: Responses API (omit temperature for models that don't support it, e.g., gpt-5)
-        const req: any = {
-          model: this.model,
-          max_output_tokens: maxTokens,
-          input: `${system}\n\n${prompt}`,
-        };
-        if (opts.temperature !== undefined && !/^gpt-5/i.test(this.model)) {
-          req.temperature = temperature;
-        }
-        const resp = await this.client.responses.create(req, { signal: opts.abortSignal });
- 
-        // Robust parsing across possible shapes
-        let txt: string | undefined =
-          (resp as any)?.output_text?.trim();
- 
-        if (!txt && Array.isArray((resp as any)?.output)) {
-          try {
-            txt = (resp as any).output
-              .map((o: any) =>
-                Array.isArray(o?.content)
-                  ? o.content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('')
-                  : ''
-              )
-              .join('')
-              .trim();
-          } catch {}
-        }
- 
-        // Some SDK versions expose data[].content[].text
-        if (!txt && Array.isArray((resp as any)?.data)) {
-          try {
-            const arr = (resp as any).data;
-            const parts = arr
-              .map((d: any) =>
-                Array.isArray(d?.content)
-                  ? d.content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('')
-                  : ''
-              )
-              .join('');
-            txt = parts.trim() || undefined;
-          } catch {}
-        }
- 
-        const took = Date.now() - start;
-        if (process.env.LOG_LEVEL === 'debug') {
-          console.debug('OpenAI Responses call', { model: this.model, took_ms: took, attempt, usage: (resp as any)?.usage, parsed_len: txt?.length ?? 0 });
-        }
-        if (txt && txt.trim()) {
-          return txt.trim();
-        }
- 
-        // Fallback: Chat Completions API
-        if (process.env.LOG_LEVEL === 'debug') {
-          console.debug('OpenAI fallback to chat.completions due to empty Responses output', { model: this.model, attempt });
-        }
-        const compReq: any = {
-          model: this.model,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: prompt },
-          ],
-        };
-        // gpt-5 family uses max_completion_tokens; others use max_tokens
-        if (/^gpt-5/i.test(this.model)) {
-          compReq.max_completion_tokens = maxTokens;
-        } else {
-          compReq.max_tokens = maxTokens;
-        }
-        if (opts.temperature !== undefined && !/^gpt-5/i.test(this.model)) {
-          compReq.temperature = temperature;
-        }
-        const cmpl = await this.client.chat.completions.create(compReq);
-        const ctext =
-          (cmpl as any)?.choices?.[0]?.message?.content?.trim() ??
-          (Array.isArray((cmpl as any)?.choices)
-            ? (cmpl as any).choices
-                .map((ch: any) => ch?.message?.content ?? '')
-                .join('')
-                .trim()
-            : undefined);
- 
-        if (ctext && ctext.trim()) {
-          return ctext.trim();
-        }
- 
-        throw new Error('OpenAI returned empty response');
-      } catch (err) {
-        lastErr = err;
-        // brief backoff
-        await new Promise((r) => setTimeout(r, 150 * attempt));
+    try {
+      // Single attempt using Responses API (no retries, no alternate parsing)
+      const req: any = {
+        model: this.model,
+        input: `${system}\n\n${prompt}`,
+      };
+      // Only non-gpt-5 models support max_output_tokens; omit for gpt-5 family
+      if (!/^gpt-5/i.test(this.model)) {
+        req.max_output_tokens = maxTokens;
       }
+      // Disable reasoning for gpt-5 family; omit temperature for gpt-5
+      if (/^gpt-5/i.test(this.model)) {
+        req.reasoning = { effort: 'none' };
+      } else if (opts.temperature !== undefined) {
+        req.temperature = temperature;
+      }
+
+      const resp = await this.client.responses.create(req, { signal: opts.abortSignal });
+
+      if (process.env.LOG_LEVEL === 'debug') {
+        const took = Date.now() - start;
+        console.debug('OpenAI Responses call', {
+          model: this.model,
+          took_ms: took,
+          usage: (resp as any)?.usage,
+        });
+      }
+
+      const txt = (resp as any)?.output_text?.trim();
+      if (!txt) {
+        throw new Error('OpenAI returned empty response');
+      }
+      return txt;
+    } catch (err) {
+      // Log standard OpenAI error shape if present and rethrow
+      try {
+        const e: any = err;
+        const details: any = {
+          model: this.model,
+          status: e?.status ?? e?.response?.status,
+          requestID: e?.requestID ?? e?.response?.headers?.get?.('x-request-id'),
+          code: e?.error?.code ?? e?.code,
+          type: e?.error?.type ?? e?.type,
+          param: e?.error?.param ?? e?.param,
+          message: e?.error?.message ?? e?.message,
+        };
+        if (process.env.LOG_LEVEL === 'debug') {
+          details.raw = e?.error || e;
+        }
+        console.error('OpenAI API error', details);
+      } catch {}
+      throw err instanceof Error ? err : new Error(String(err));
     }
-    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 }
