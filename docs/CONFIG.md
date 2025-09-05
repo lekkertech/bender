@@ -9,7 +9,7 @@ Define configuration via environment variables and keep secrets out of source co
 - `PORT`: HTTP port for Events API servers (e.g., `3000`). Optional; default depends on framework.
 - `LOG_LEVEL`: `debug`, `info`, `warn`, `error`. Optional; default `info`.
 - `ALLOWED_CHANNELS`: Comma-separated channel IDs allowed to interact (e.g., `C0123,C0456`). Optional.
-- `DEFAULT_REPLY_MODE`: `thread` or `channel`. Optional; default `thread`.
+- `DEFAULT_REPLY_MODE`: `thread` or `channel`. Optional; default `channel`.
 - `FEATURES`: Comma-separated list of features to enable. Defaults to `boom,fun` if unset. Valid values: `boom`, `fun`.
 - `OPENAI_API_KEY`: Enable Fun bundle (AI) commands when set.
 - `OPENAI_MODEL`: Defaults to `gpt-4.1-nano`. Override to another model if desired.
@@ -28,7 +28,7 @@ SLACK_APP_TOKEN=xapp-1-A1234567890-abcdef.yoursecret
 PORT=3000
 LOG_LEVEL=info
 ALLOWED_CHANNELS=C01ABCDEF,C02GHIJKL
-DEFAULT_REPLY_MODE=thread
+DEFAULT_REPLY_MODE=channel
 
 # Features
 FEATURES=boom,fun

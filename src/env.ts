@@ -44,7 +44,7 @@ export function loadConfig(): Config {
     .filter(Boolean);
 
   // Reply mode
-  const defaultReplyMode = (process.env.DEFAULT_REPLY_MODE || 'thread') as Config['defaultReplyMode'];
+  const defaultReplyMode = (process.env.DEFAULT_REPLY_MODE || 'channel') as Config['defaultReplyMode'];
 
   // Features toggle (default both enabled)
   const featuresStr = process.env.FEATURES || 'boom,fun';

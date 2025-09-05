@@ -32,17 +32,32 @@ export class OpenAIClient {
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const resp = await this.client.chat.completions.create({
-          model: this.model,
-          temperature,
-          max_tokens: maxTokens,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: prompt },
-          ],
-        }, { signal: opts.abortSignal });
+        const resp = await this.client.responses.create(
+          {
+            model: this.model,
+            temperature,
+            max_output_tokens: maxTokens,
+            // Use Responses API. We inline the system instruction with the user prompt to avoid relying on
+            // optional typed fields that might vary across SDK versions.
+            input: `${system}\n\n${prompt}`,
+          },
+          { signal: opts.abortSignal }
+        );
 
-        const txt = resp.choices?.[0]?.message?.content?.trim();
+        // Prefer SDK helper, with robust fallback parsing for various response shapes
+        const txt =
+          (resp as any)?.output_text?.trim() ??
+          (Array.isArray((resp as any)?.output)
+            ? (resp as any).output
+                .map((o: any) =>
+                  Array.isArray(o?.content)
+                    ? o.content.map((c: any) => c?.text ?? '').join('')
+                    : ''
+                )
+                .join('')
+                .trim()
+            : undefined);
+
         const took = Date.now() - start;
         // Lightweight logging; callers can add more structured logs if desired.
         if (process.env.LOG_LEVEL === 'debug') {

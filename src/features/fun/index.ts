@@ -30,13 +30,12 @@ function inAllowedChannelFun(cfg: Config, channel?: string): boolean {
 }
 
 function preferredThreadTs(cfg: Config, ev: any): string | undefined {
-  // If default is thread, always thread the reply (start a thread if none)
-  if (cfg.defaultReplyMode === 'thread') {
-    return ev.thread_ts || ev.ts;
+  // Channel mode: always reply in channel (never thread), regardless of where the mention occurred
+  if (cfg.defaultReplyMode === 'channel') {
+    return undefined;
   }
-  // If already in a thread, keep the thread regardless of default
-  if (ev.thread_ts) return ev.thread_ts;
-  return undefined;
+  // Thread mode: always thread the reply (start a thread if none)
+  return ev.thread_ts || ev.ts;
 }
 
 function stripLeadingBotMention(text: string): string {

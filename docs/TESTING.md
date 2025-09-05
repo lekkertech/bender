@@ -29,7 +29,7 @@ Strategies and checklists to validate your Slack bot.
   - Friday crown after first Friday `:boom:` podium placement posts weekly winners.
   - `@bot leaderboard` prints week-to-date leaderboard with current king(s).
 - Fun module (app mentions):
-  - `@bot haiku spring in cape town` replies with a 3-line haiku in a thread (or channel if DEFAULT_REPLY_MODE=channel).
+  - `@bot haiku spring in cape town` replies with a 3-line haiku in-channel by default (threaded if DEFAULT_REPLY_MODE=thread).
   - `@bot roast @user` returns a short playful roast. `@bot roast @user spicy` allows a spicier version.
   - `@bot compliment @user` returns a short sincere compliment.
   - `@bot emojify Friday lunch plans` returns an emoji sequence, minimal text.
@@ -40,8 +40,9 @@ Strategies and checklists to validate your Slack bot.
   - Per-user: more than 1 request in 60s yields an ephemeral “rate limited” message.
   - Per-channel: after 20 requests in 60s, subsequent requests are rate limited.
 - Thread behavior:
-  - Replies occur in thread if `DEFAULT_REPLY_MODE=thread`.
-  - If invoked in a thread, replies remain in the same thread regardless of default.
+  - Replies occur in-channel by default.
+  - Set `DEFAULT_REPLY_MODE=thread` to force threaded replies (starts a thread if none exists).
+  - Even when invoked inside a thread, if `DEFAULT_REPLY_MODE=channel` the bot replies in-channel.
 - Bot ignore: the bot ignores its own messages and other bots/system messages.
 - Error path: simulate a thrown exception in a handler; verify error logging and that the bot remains responsive.
 
