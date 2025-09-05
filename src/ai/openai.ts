@@ -32,40 +32,87 @@ export class OpenAIClient {
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        // Build request payload; omit temperature for models that don't support it (e.g., gpt-5)
+        // Primary: Responses API (omit temperature for models that don't support it, e.g., gpt-5)
         const req: any = {
           model: this.model,
           max_output_tokens: maxTokens,
-          // Use Responses API. We inline the system instruction with the user prompt to avoid relying on
-          // optional typed fields that might vary across SDK versions.
           input: `${system}\n\n${prompt}`,
         };
         if (opts.temperature !== undefined && !/^gpt-5/i.test(this.model)) {
           req.temperature = temperature;
         }
         const resp = await this.client.responses.create(req, { signal: opts.abortSignal });
-
-        // Prefer SDK helper, with robust fallback parsing for various response shapes
-        const txt =
-          (resp as any)?.output_text?.trim() ??
-          (Array.isArray((resp as any)?.output)
-            ? (resp as any).output
-                .map((o: any) =>
-                  Array.isArray(o?.content)
-                    ? o.content.map((c: any) => c?.text ?? '').join('')
-                    : ''
-                )
+ 
+        // Robust parsing across possible shapes
+        let txt: string | undefined =
+          (resp as any)?.output_text?.trim();
+ 
+        if (!txt && Array.isArray((resp as any)?.output)) {
+          try {
+            txt = (resp as any).output
+              .map((o: any) =>
+                Array.isArray(o?.content)
+                  ? o.content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('')
+                  : ''
+              )
+              .join('')
+              .trim();
+          } catch {}
+        }
+ 
+        // Some SDK versions expose data[].content[].text
+        if (!txt && Array.isArray((resp as any)?.data)) {
+          try {
+            const arr = (resp as any).data;
+            const parts = arr
+              .map((d: any) =>
+                Array.isArray(d?.content)
+                  ? d.content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('')
+                  : ''
+              )
+              .join('');
+            txt = parts.trim() || undefined;
+          } catch {}
+        }
+ 
+        const took = Date.now() - start;
+        if (process.env.LOG_LEVEL === 'debug') {
+          console.debug('OpenAI Responses call', { model: this.model, took_ms: took, attempt, usage: (resp as any)?.usage, parsed_len: txt?.length ?? 0 });
+        }
+        if (txt && txt.trim()) {
+          return txt.trim();
+        }
+ 
+        // Fallback: Chat Completions API
+        if (process.env.LOG_LEVEL === 'debug') {
+          console.debug('OpenAI fallback to chat.completions due to empty Responses output', { model: this.model, attempt });
+        }
+        const compReq: any = {
+          model: this.model,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: prompt },
+          ],
+          max_tokens: maxTokens,
+        };
+        if (opts.temperature !== undefined && !/^gpt-5/i.test(this.model)) {
+          compReq.temperature = temperature;
+        }
+        const cmpl = await this.client.chat.completions.create(compReq);
+        const ctext =
+          (cmpl as any)?.choices?.[0]?.message?.content?.trim() ??
+          (Array.isArray((cmpl as any)?.choices)
+            ? (cmpl as any).choices
+                .map((ch: any) => ch?.message?.content ?? '')
                 .join('')
                 .trim()
             : undefined);
-
-        const took = Date.now() - start;
-        // Lightweight logging; callers can add more structured logs if desired.
-        if (process.env.LOG_LEVEL === 'debug') {
-          console.debug('OpenAI chat call', { model: this.model, took_ms: took, attempt, usage: (resp as any)?.usage });
+ 
+        if (ctext && ctext.trim()) {
+          return ctext.trim();
         }
-        if (!txt) throw new Error('OpenAI returned empty response');
-        return txt;
+ 
+        throw new Error('OpenAI returned empty response');
       } catch (err) {
         lastErr = err;
         // brief backoff
