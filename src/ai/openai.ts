@@ -93,8 +93,13 @@ export class OpenAIClient {
             { role: 'system', content: system },
             { role: 'user', content: prompt },
           ],
-          max_tokens: maxTokens,
         };
+        // gpt-5 family uses max_completion_tokens; others use max_tokens
+        if (/^gpt-5/i.test(this.model)) {
+          compReq.max_completion_tokens = maxTokens;
+        } else {
+          compReq.max_tokens = maxTokens;
+        }
         if (opts.temperature !== undefined && !/^gpt-5/i.test(this.model)) {
           compReq.temperature = temperature;
         }
