@@ -10,10 +10,13 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
   - Immediately crown weekly winner(s) after Friday :boom: placement; leaderboard resets weekly (Mon)
   - If any boom emoji is posted outside the window, after a game’s podium is full, or after the day is closed, the bot adds a :clown_face: reaction on that message
 - Fun interactions (mentions):
-  - `@bot haiku <topic>`
-  - `@bot roast @user [spicy]` and `@bot compliment @user`
-  - `@bot emojify <text>`, `@bot slang za <text>`, `@bot dadjoke>`
+  - Commands are optional and defined via `FUN_CONFIG` (see `data/fun-commands.json.example`). There are no built-in defaults.
+  - If no commands are configured, only the chat fallback (below) is used for non-"leaderboard" mentions.
   - Rate limits: 1 request per user per minute, 20 requests per channel per minute
+- Chat fallback for non-command mentions:
+  - When a user mentions the bot and it’s not a defined Fun command (and not "leaderboard"), the bot replies using an AI fallback.
+  - History is in-memory only, keyed by channel, and pruned by configurable caps. Replies honor `DEFAULT_REPLY_MODE` (thread or channel).
+  - Configure via CHAT_* env vars; see docs/CONFIG.md.
 - Socket Mode by default; optional Events API
 - Incoming event logging to aid development
 - Channel allowlist and dedupe middleware in place
@@ -62,6 +65,7 @@ See `docs/CONFIG.md` for more details.
   - `TIMEZONE=Africa/Johannesburg`
   - `ALLOWED_CHANNELS=C0919MX7KJS` (your `#capetown` channel ID)
   - Optionally `HOLIDAYS=YYYY-MM-DD,YYYY-MM-DD` to add extra dates
+  - Chat fallback is configurable via `CHAT_*` variables. See docs/CONFIG.md.
 
 ## Holidays
 - Seeded SA public holidays for 2025 at `data/holidays/za-2025.json`.

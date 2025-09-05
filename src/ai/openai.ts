@@ -32,17 +32,18 @@ export class OpenAIClient {
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const resp = await this.client.responses.create(
-          {
-            model: this.model,
-            temperature,
-            max_output_tokens: maxTokens,
-            // Use Responses API. We inline the system instruction with the user prompt to avoid relying on
-            // optional typed fields that might vary across SDK versions.
-            input: `${system}\n\n${prompt}`,
-          },
-          { signal: opts.abortSignal }
-        );
+        // Build request payload; omit temperature for models that don't support it (e.g., gpt-5)
+        const req: any = {
+          model: this.model,
+          max_output_tokens: maxTokens,
+          // Use Responses API. We inline the system instruction with the user prompt to avoid relying on
+          // optional typed fields that might vary across SDK versions.
+          input: `${system}\n\n${prompt}`,
+        };
+        if (opts.temperature !== undefined && !/^gpt-5/i.test(this.model)) {
+          req.temperature = temperature;
+        }
+        const resp = await this.client.responses.create(req, { signal: opts.abortSignal });
 
         // Prefer SDK helper, with robust fallback parsing for various response shapes
         const txt =

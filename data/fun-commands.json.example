@@ -1,4 +1,9 @@
 {
+  "default": {
+    "systemPrompt": "You are a helpful Slack bot. Keep replies concise, actionable, and friendly. Use plain text suitable for Slack. Avoid long lists and code fences unless explicitly requested.",
+    "temperature": 0.7,
+    "maxTokens": 512
+  },
   "commands": [
     {
       "name": "haiku",

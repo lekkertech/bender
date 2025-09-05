@@ -6,6 +6,45 @@ import { shouldBypassRateLimit } from '../../util/admin.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+// In-memory, channel-scoped chat history (lost on restart)
+type ChatRole = 'user' | 'assistant';
+type ChatEntry = { role: ChatRole; text: string; ts: string };
+const channelHistory = new Map<string, ChatEntry[]>();
+
+function clipInput(s: string, max: number): string {
+  if (!s) return '';
+  const t = s.trim();
+  return t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+
+function pruneHistoryInPlace(arr: ChatEntry[], maxTurns: number, maxChars: number): void {
+  // 1) Cap by turns (approx pairs → 2 entries per turn)
+  const maxEntries = Math.max(2, Math.floor(maxTurns) * 2);
+  while (arr.length > maxEntries) arr.shift();
+
+  // 2) Cap by total characters across rendered transcript
+  const renderLen = (items: ChatEntry[]) =>
+    items.reduce((n, e) => n + (e.role === 'user' ? 6 : 10) + e.text.length + 1, 0); // "User: "=6 incl space; "Assistant: " ~10
+  if (renderLen(arr) <= maxChars) return;
+
+  // Drop from oldest until within limit
+  while (arr.length > 1 && renderLen(arr) > maxChars) {
+    arr.shift();
+  }
+}
+
+function buildTranscript(arr: ChatEntry[], maxChars: number): string {
+  // Render chronological; if still too long, drop from the start until within cap
+  const lines = arr.map((e) => `${e.role === 'user' ? 'User' : 'Assistant'}: ${e.text}`);
+  let start = 0;
+  let text = lines.join('\n');
+  while (text.length > maxChars && start < lines.length - 1) {
+    start++;
+    text = lines.slice(start).join('\n');
+  }
+  return text;
+}
+
 type FunCommandConfig = {
   name: string;                 // e.g. "haiku"
   pattern: string;              // regex string applied to mention text after "@bot"
@@ -58,61 +97,7 @@ function renderTemplate(tpl: string, ctx: Record<string, string>): string {
   return tpl.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key) => (ctx[key] ?? ''));
 }
 
-function defaultFunCommands(): FunCommandConfig[] {
-  return [
-    {
-      name: 'haiku',
-      pattern: '^haiku\\s+(.+)$',
-      promptTemplate: 'Write a 3-line haiku in 5-7-5 syllable form about: {{arg1}}. No intro, no backticks, just the haiku. Keep it concise.',
-      temperature: 0.7,
-      maxTokens: 90,
-      help: 'haiku <topic>',
-    },
-    {
-      name: 'roast',
-      pattern: '^roast\\s+(<@[^>]+>)(?:\\s+(spicy))?\\s*$',
-      promptTemplate: 'Write a {{variant}} one-liner roast for {{arg1}}. Be witty and brief (max 25 words). No preambles. Return a single line.',
-      temperature: 0.9,
-      maxTokens: 80,
-      help: 'roast <@user> [spicy]',
-      variantGroup: 2,
-      variantThen: 'spicy',
-      variantElse: 'playful, mild',
-    },
-    {
-      name: 'compliment',
-      pattern: '^compliment\\s+(<@[^>]+>)\\s*$',
-      promptTemplate: 'Give a sincere, upbeat one-liner compliment for {{arg1}}. Keep it under 25 words. No preambles.',
-      temperature: 0.8,
-      maxTokens: 80,
-      help: 'compliment <@user>',
-    },
-    {
-      name: 'emojify',
-      pattern: '^emojify\\s+(.+)$',
-      promptTemplate: 'Translate the following into a short emoji sequence that conveys the meaning. Avoid words unless necessary. Text: {{arg1}}',
-      temperature: 0.8,
-      maxTokens: 80,
-      help: 'emojify <text>',
-    },
-    {
-      name: 'slang-za',
-      pattern: '^slang\\s+za\\s+(.+)$',
-      promptTemplate: 'Rewrite the following into South African slang while staying friendly and clear. Keep it concise and fun. Original: {{arg1}}',
-      temperature: 0.9,
-      maxTokens: 120,
-      help: 'slang za <text>',
-    },
-    {
-      name: 'dadjoke',
-      pattern: '^dadjoke\\b',
-      promptTemplate: 'Tell one clean dad joke. Return a single short joke with setup and punchline.',
-      temperature: 0.9,
-      maxTokens: 120,
-      help: 'dadjoke',
-    },
-  ];
-}
+/* No built-in default fun commands — commands are provided via JSON config. */
 
 function compileCommands(cfgs: FunCommandConfig[]): CompiledCommand[] {
   const compiled: CompiledCommand[] = [];
@@ -128,15 +113,31 @@ function compileCommands(cfgs: FunCommandConfig[]): CompiledCommand[] {
   return compiled;
 }
 
-function loadFunConfigFromFile(fp: string | undefined): FunCommandConfig[] | null {
+type ChatDefaultConfig = {
+  systemPrompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+};
+
+type FunBundleConfig = {
+  commands: FunCommandConfig[];
+  defaultChat?: ChatDefaultConfig; // from fun-commands.json "default" section
+};
+
+function loadFunBundleConfig(fp: string | undefined): FunBundleConfig | null {
   try {
     if (!fp) return null;
     const raw = readFileSync(fp, 'utf8');
-    const parsed = JSON.parse(raw) as { commands?: FunCommandConfig[] };
-    if (parsed && Array.isArray(parsed.commands) && parsed.commands.length) {
-      return parsed.commands;
-    }
-    return null;
+    const parsed = JSON.parse(raw) as {
+      default?: ChatDefaultConfig;
+      defaultChat?: ChatDefaultConfig; // allow either key, prefer "default"
+      commands?: FunCommandConfig[];
+    };
+    const commands = Array.isArray(parsed?.commands) && parsed!.commands!.length
+      ? (parsed!.commands as FunCommandConfig[])
+      : [];
+    const defaultChat = (parsed?.default ?? parsed?.defaultChat) || undefined;
+    return { commands, defaultChat };
   } catch {
     return null;
   }
@@ -148,10 +149,11 @@ export function registerFunFeature(app: App, cfg: Config) {
     ? (isAbsolute(cfg.funConfigPath) ? cfg.funConfigPath : join(process.cwd(), cfg.funConfigPath))
     : undefined;
 
-  // Load commands from JSON if available; otherwise use defaults
-  const fileCommands = funCfgPath && existsSync(funCfgPath) ? loadFunConfigFromFile(funCfgPath) : null;
-  const commandConfigs: FunCommandConfig[] = fileCommands ?? defaultFunCommands();
+  // Load commands and optional default chat settings from JSON (no built-in defaults)
+  const bundle = funCfgPath && existsSync(funCfgPath) ? loadFunBundleConfig(funCfgPath) : null;
+  const commandConfigs: FunCommandConfig[] = bundle?.commands ?? [];
   const commands = compileCommands(commandConfigs);
+  const defaultChat = bundle?.defaultChat;
 
   const ai = new OpenAIClient(cfg.openaiApiKey, cfg.openaiModel);
 
@@ -239,18 +241,93 @@ export function registerFunFeature(app: App, cfg: Config) {
         return;
       }
 
-      // If nothing matched, show a help message generated from configured commands
-      const helpLines = ['*Fun commands:*'];
-      for (const c of commands) {
-        if (c.help) helpLines.push(`• ${c.help}`);
-      }
-      helpLines.push('', 'Example: @bot haiku spring in cape town');
-      const post: any = {
-        channel: ev.channel,
-        text: helpLines.join('\n'),
+      // If nothing matched, either show help (explicit) or use chat fallback
+      const lowered = cleanedLower(ev.text);
+
+      const postHelp = async () => {
+        const helpLines: string[] = [];
+        if (commands.length) {
+          helpLines.push('*Fun commands:*');
+          for (const c of commands) {
+            if (c.help) helpLines.push(`• ${c.help}`);
+          }
+          helpLines.push('', 'Example: @bot <command> <args>');
+        } else {
+          helpLines.push('No predefined fun commands configured. Try asking me a question with “@bot …”.');
+        }
+        const post: any = {
+          channel: ev.channel,
+          text: helpLines.join('\n'),
+        };
+        if (replyThreadTs) post.thread_ts = replyThreadTs;
+        await client.chat.postMessage(post);
       };
-      if (replyThreadTs) post.thread_ts = replyThreadTs;
-      await client.chat.postMessage(post);
+
+      // Explicit help triggers
+      if (lowered === 'help' || lowered === '?help' || lowered === 'commands') {
+        await postHelp();
+        return;
+      }
+
+      // Chat fallback (in-memory, channel scoped) if enabled
+      if (cfg.chatEnabled) {
+        try {
+          // Prepare per-channel history array
+          let hist = channelHistory.get(ev.channel);
+          if (!hist) {
+            hist = [];
+            channelHistory.set(ev.channel, hist);
+          }
+
+          // Append current user message (clip input length)
+          const userMsg: ChatEntry = {
+            role: 'user',
+            text: clipInput(afterBotTrim, cfg.chatInputMaxChars),
+            ts: String(ev.ts || ''),
+          };
+          hist.push(userMsg);
+
+          // Prune by configured caps
+          pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
+
+          // Build transcript string
+          const transcript = buildTranscript(hist, cfg.chatHistoryMaxChars);
+
+          if (process.env.LOG_LEVEL === 'debug') {
+            logger?.debug?.({
+              channel: ev.channel,
+              entries: hist.length,
+              chatHistoryMaxTurns: cfg.chatHistoryMaxTurns,
+              chatHistoryMaxChars: cfg.chatHistoryMaxChars,
+              chatReplyMaxTokens: cfg.chatReplyMaxTokens,
+              chatTemperature: cfg.chatTemperature,
+            }, 'chat-fallback: invoking OpenAI');
+          }
+
+          const out = await ai.chat(`${transcript}\n\nAssistant:`, {
+            temperature: (defaultChat?.temperature ?? cfg.chatTemperature),
+            maxTokens: (defaultChat?.maxTokens ?? cfg.chatReplyMaxTokens),
+            systemPrompt: (defaultChat?.systemPrompt ?? cfg.chatSystemPrompt),
+          });
+
+          // Send reply per default reply mode
+          const reply = truncate(out, 1500); // keep Slack-friendly; model already capped
+          const post: any = { channel: ev.channel, text: reply };
+          if (replyThreadTs) post.thread_ts = replyThreadTs;
+          await client.chat.postMessage(post);
+
+          // Append assistant message and prune again
+          hist.push({ role: 'assistant', text: reply, ts: String(Date.now()) });
+          pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
+          return;
+        } catch (e) {
+          logger?.error?.(e);
+          // Fall through to help as a graceful degradation
+        }
+      }
+
+      // Fallback when chat disabled or failed: show help
+      await postHelp();
     } catch (err) {
       logger?.error?.(err);
     }

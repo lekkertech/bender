@@ -19,6 +19,15 @@ export type Config = {
   // OpenAI configuration (Fun bundle)
   openaiApiKey?: string;
   openaiModel: string; // default: gpt-4.1-nano
+
+  // Chat fallback configuration (in-memory, channel-scoped)
+  chatEnabled: boolean; // default true when OPENAI_API_KEY is present, unless explicitly disabled
+  chatHistoryMaxTurns: number; // number of dialogue turns (approx. user+assistant pairs) to keep
+  chatHistoryMaxChars: number; // max characters across transcript kept in memory
+  chatInputMaxChars: number; // clip each incoming user message to this many chars before storing
+  chatReplyMaxTokens: number; // OpenAI max_output_tokens
+  chatTemperature: number;
+  chatSystemPrompt: string;
 };
 
 function parseBool(val: string | undefined, fallback = false): boolean {
@@ -61,6 +70,18 @@ export function loadConfig(): Config {
   // Fun config file path
   const funConfigPath = process.env.FUN_CONFIG || 'data/fun-commands.json';
 
+  // Chat fallback config (in-memory)
+  const chatEnabled = parseBool(process.env.CHAT_ENABLED, !!openaiApiKey);
+  const chatHistoryMaxTurns = Number(process.env.CHAT_HISTORY_MAX_TURNS || 20);
+  const chatHistoryMaxChars = Number(process.env.CHAT_HISTORY_MAX_CHARS || 16000);
+  const chatInputMaxChars = Number(process.env.CHAT_INPUT_MAX_CHARS || 4000);
+  const chatReplyMaxTokens = Number(process.env.CHAT_REPLY_MAX_TOKENS || 512);
+  const chatTemperature =
+    process.env.CHAT_TEMPERATURE != null ? Number(process.env.CHAT_TEMPERATURE) : 0.7;
+  const chatSystemPrompt =
+    process.env.CHAT_SYSTEM_PROMPT ||
+    'You are a helpful Slack bot. Keep replies concise, actionable, and friendly. Use plain text suitable for Slack. Avoid long lists and code fences unless explicitly requested.';
+
   if (!botToken) {
     throw new Error('Missing SLACK_BOT_TOKEN');
   }
@@ -87,5 +108,14 @@ export function loadConfig(): Config {
     funConfigPath,
     openaiApiKey,
     openaiModel,
+
+    // Chat fallback (in-memory)
+    chatEnabled,
+    chatHistoryMaxTurns,
+    chatHistoryMaxChars,
+    chatInputMaxChars,
+    chatReplyMaxTokens,
+    chatTemperature,
+    chatSystemPrompt,
   };
 }
