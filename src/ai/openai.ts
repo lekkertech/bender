@@ -41,7 +41,7 @@ export class OpenAIClient {
       }
       // Disable reasoning for gpt-5 family; omit temperature for gpt-5
       if (/^gpt-5/i.test(this.model)) {
-        req.reasoning = { effort: 'none' };
+        req.reasoning = { effort: 'minimal' };
       } else if (opts.temperature !== undefined) {
         req.temperature = temperature;
       }
