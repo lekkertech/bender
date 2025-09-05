@@ -223,10 +223,8 @@ export function registerChatFeature(app: App, cfg: Config) {
       const replyThreadTs = preferredThreadTs(cfg, ev);
 
       // Show current prompt (any user)
-      // Syntax: "@bot chat show prompt" or "@bot show prompt"
-      const showPromptMatch =
-        afterBotTrim.match(/^chat\s+(?:show|current)\s+prompt\s*$/i) ||
-        afterBotTrim.match(/^(?:show|current)\s+prompt\s*$/i);
+      // Syntax: "@bot show prompt"
+      const showPromptMatch = afterBotTrim.match(/^show\s+prompt\s*$/i);
       if (showPromptMatch) {
         const effective = ((defaultChat?.systemPrompt ?? cfg.chatSystemPrompt) || '').trim();
         let meta = null as null | { by?: string; when?: string };
@@ -258,11 +256,9 @@ export function registerChatFeature(app: App, cfg: Config) {
         return;
       }
 
-      // Admin-only: update the top-level default system prompt from Slack
-      // Syntax: "@bot chat update default prompt <new system prompt>" (also accepts "set")
-      const updateDefaultMatch =
-        afterBotTrim.match(/^chat\s+(?:set|update)\s+default\s+prompt\s+([\s\S]+)$/i) ||
-        afterBotTrim.match(/^(?:set|update)\s+default\s+prompt\s+([\s\S]+)$/i);
+      // Admin-only: update the system prompt from Slack
+      // Syntax: "@bot set prompt <new system prompt>"
+      const updateDefaultMatch = afterBotTrim.match(/^set\s+prompt\s+([\s\S]+)$/i);
       if (updateDefaultMatch) {
         const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
         if (!isAdmin) {
@@ -270,7 +266,7 @@ export function registerChatFeature(app: App, cfg: Config) {
             await client.chat.postEphemeral({
               channel: ev.channel,
               user: ev.user,
-              text: 'Only workspace admins or users in ADMIN_USER_IDS may update defaults.',
+              text: 'Only workspace admins or users in ADMIN_USER_IDS may update the prompt.',
             });
           } catch {}
           return;
