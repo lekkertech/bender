@@ -10,12 +10,12 @@ Define configuration via environment variables and keep secrets out of source co
 - `LOG_LEVEL`: `debug`, `info`, `warn`, `error`. Optional; default `info`.
 - `ALLOWED_CHANNELS`: Comma-separated channel IDs allowed to interact (e.g., `C0123,C0456`). Optional.
 - `DEFAULT_REPLY_MODE`: `thread` or `channel`. Optional; default `channel`.
-- `FEATURES`: Comma-separated list of features to enable. Defaults to `boom,fun` if unset. Valid values: `boom`, `fun`.
-- `OPENAI_API_KEY`: Enable Fun bundle (AI) commands when set.
+- `FEATURES`: Comma-separated list of features to enable. Defaults to `boom,chat` if unset. Valid values: `boom`, `chat`.
+- `OPENAI_API_KEY`: Enable Chat feature (AI) when set.
 - `OPENAI_MODEL`: Defaults to `gpt-4.1-nano`. Override to another model if desired.
-- `FUN_ALLOWED_CHANNELS`: Optional override allowlist for Fun bundle only; if unset, Fun responds in any channel the bot is a member of.
-- `FUN_CONFIG`: Path to a JSON file defining Fun commands (regex patterns and prompt templates) and optional default chat. Defaults to `data/fun-commands.json`. If missing, no predefined commands are loaded (chat fallback still works). See `data/fun-commands.json.example`.
-- Chat fallback (in-memory, channel-scoped; respects DEFAULT_REPLY_MODE):
+- `CHAT_ALLOWED_CHANNELS`: Optional override allowlist for the Chat feature; if unset, Chat responds in any channel the bot is a member of.
+- `CHAT_CONFIG`: Optional path to a JSON file defining default chat settings (e.g., `systemPrompt`, `temperature`, `maxTokens`). Defaults to `data/chat-config.json`. See `data/chat-config.json.example`.
+- Chat (in-memory, channel-scoped; respects DEFAULT_REPLY_MODE):
   - `CHAT_ENABLED` (default: true if `OPENAI_API_KEY` is set)
   - `CHAT_HISTORY_MAX_TURNS` (default: 20)
   - `CHAT_HISTORY_MAX_CHARS` (default: 16000)
@@ -25,8 +25,8 @@ Define configuration via environment variables and keep secrets out of source co
   - `CHAT_SYSTEM_PROMPT` (default provided; customize as needed)
 
 ### Rate Limits (built-in defaults)
-- Per-user: 1 request/minute (Fun bundle)
-- Per-channel: 20 requests/minute (Fun bundle)
+- Per-user: 1 request/minute (Chat feature)
+- Per-channel: 20 requests/minute (Chat feature)
 
 ## Sample `.env` (do not commit)
 ```
@@ -39,16 +39,16 @@ ALLOWED_CHANNELS=C01ABCDEF,C02GHIJKL
 DEFAULT_REPLY_MODE=channel
 
 # Features
-FEATURES=boom,fun
+FEATURES=boom,chat
 
-# Fun bundle (AI)
+# Chat feature (AI)
 OPENAI_API_KEY=sk-xxxx
 OPENAI_MODEL=gpt-4.1-nano
-# FUN_ALLOWED_CHANNELS=C0123,C0456
-# (If unset, Fun responds in any channel the bot is in)
-# FUN_CONFIG=data/fun-commands.json
+# CHAT_ALLOWED_CHANNELS=C0123,C0456
+# (If unset, Chat responds in any channel the bot is in)
+# CHAT_CONFIG=data/chat-config.json
 
-# Chat fallback (channel-scoped, in-memory)
+# Chat settings (channel-scoped, in-memory)
 # CHAT_ENABLED=true
 # CHAT_HISTORY_MAX_TURNS=20
 # CHAT_HISTORY_MAX_CHARS=16000
@@ -63,11 +63,10 @@ OPENAI_MODEL=gpt-4.1-nano
 - Rotate tokens regularly and after suspected compromise.
 - If using Events API behind a proxy, ensure the raw body required for signature verification is available to your framework.
 
-## Chat Fallback Behavior
-- Trigger: when a user mentions the bot and the text does not match any configured Fun command (and is not "leaderboard", which is handled by Boom).
+## Chat Behavior
+- Trigger: when a user mentions the bot (except "leaderboard", which is handled by Boom).
 - Reply placement: honors `DEFAULT_REPLY_MODE` (thread or channel).
 - State: in-memory only, keyed by channel id; history is lost on restart.
 - Bounded context: trims to `CHAT_HISTORY_MAX_TURNS` and `CHAT_HISTORY_MAX_CHARS`; each incoming message is clipped to `CHAT_INPUT_MAX_CHARS`.
-- OpenAI call: uses `CHAT_SYSTEM_PROMPT`, `CHAT_TEMPERATURE`, and `CHAT_REPLY_MAX_TOKENS`.
-- Help: if a user mentions the bot with "help", "?help", or "commands", the bot returns the Fun help list instead of chat fallback.
+- OpenAI call: uses `CHAT_SYSTEM_PROMPT`, `CHAT_TEMPERATURE`, and `CHAT_REPLY_MAX_TOKENS` (and optionally overrides from `CHAT_CONFIG`).
 

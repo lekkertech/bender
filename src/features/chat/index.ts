@@ -1,0 +1,293 @@
+import type { App } from '@slack/bolt';
+import type { Config } from '../../env.js';
+import { OpenAIClient } from '../../ai/openai.js';
+import { RateLimiter } from '../../util/rateLimit.js';
+import { shouldBypassRateLimit, isWorkspaceAdmin } from '../../util/admin.js';
+import { readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+
+// In-memory, channel-scoped chat history (lost on restart)
+type ChatRole = 'user' | 'assistant';
+type ChatEntry = { role: ChatRole; text: string; ts: string };
+const channelHistory = new Map<string, ChatEntry[]>();
+
+function clipInput(s: string, max: number): string {
+  if (!s) return '';
+  const t = s.trim();
+  return t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+
+function pruneHistoryInPlace(arr: ChatEntry[], maxTurns: number, maxChars: number): void {
+  // 1) Cap by turns (approx pairs → 2 entries per turn)
+  const maxEntries = Math.max(2, Math.floor(maxTurns) * 2);
+  while (arr.length > maxEntries) arr.shift();
+
+  // 2) Cap by total characters across rendered transcript
+  const renderLen = (items: ChatEntry[]) =>
+    items.reduce((n, e) => n + (e.role === 'user' ? 6 : 10) + e.text.length + 1, 0); // "User: "=6 incl space; "Assistant: " ~10
+  if (renderLen(arr) <= maxChars) return;
+
+  // Drop from oldest until within limit
+  while (arr.length > 1 && renderLen(arr) > maxChars) {
+    arr.shift();
+  }
+}
+
+function buildTranscript(arr: ChatEntry[], maxChars: number): string {
+  // Render chronological; if still too long, drop from the start until within cap
+  const lines = arr.map((e) => `${e.role === 'user' ? 'User' : 'Assistant'}: ${e.text}`);
+  let start = 0;
+  let text = lines.join('\n');
+  while (text.length > maxChars && start < lines.length - 1) {
+    start++;
+    text = lines.slice(start).join('\n');
+  }
+  return text;
+}
+
+function inAllowedChannelChat(cfg: Config, channel?: string): boolean {
+  // Chat feature: if CHAT_ALLOWED_CHANNELS is unset, allow any channel the bot is in.
+  const set = cfg.chatAllowedChannels;
+  if (!set) return true;
+  return channel ? set.has(channel) : false;
+}
+
+function preferredThreadTs(cfg: Config, ev: any): string | undefined {
+  // Channel mode: always reply in channel (never thread), regardless of where the mention occurred
+  if (cfg.defaultReplyMode === 'channel') {
+    return undefined;
+  }
+  // Thread mode: always thread the reply (start a thread if none)
+  return ev.thread_ts || ev.ts;
+}
+
+function stripLeadingBotMention(text: string): string {
+  // Remove the first leading mention token (assumed bot) and surrounding whitespace
+  return String(text || '').replace(/^\s*<@[^>]+>\s*/i, '');
+}
+
+function cleanedLower(text: string): string {
+  return stripLeadingBotMention(text).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function truncate(s: string, max = 800): string {
+  if (!s) return s;
+  const t = s.trim();
+  return t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+
+type ChatDefaultConfig = {
+  systemPrompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+};
+
+function loadChatDefault(fp: string | undefined): ChatDefaultConfig | null {
+  try {
+    if (!fp) return null;
+    const raw = readFileSync(fp, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      default?: ChatDefaultConfig;
+      defaultChat?: ChatDefaultConfig; // allow either key, prefer "default"
+    };
+    const def = (parsed?.default ?? parsed?.defaultChat) || undefined;
+    return def || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Atomically write JSON to disk by writing to a temp file and renaming.
+ */
+function writeJsonAtomic(fp: string, obj: any): void {
+  const tmp = `${fp}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+  renameSync(tmp, fp);
+}
+
+/**
+ * Update the top-level default systemPrompt on disk. Returns updated defaultChat.
+ * This preserves existing temperature/maxTokens if present.
+ */
+function updateDefaultPromptOnDisk(fp: string, newPrompt: string): ChatDefaultConfig {
+  const currentDefault = loadChatDefault(fp) || {};
+  const updatedDefault: ChatDefaultConfig = { ...currentDefault, systemPrompt: newPrompt };
+
+  // Persist minimal file with only default block; commands are no longer used
+  const out: any = {};
+  if (
+    updatedDefault &&
+    (updatedDefault.systemPrompt != null ||
+      updatedDefault.temperature != null ||
+      updatedDefault.maxTokens != null)
+  ) {
+    out.default = updatedDefault;
+  }
+  writeJsonAtomic(fp, out);
+  return updatedDefault;
+}
+
+export function registerChatFeature(app: App, cfg: Config) {
+  // Resolve optional chat config path (relative to cwd if not absolute)
+  const chatCfgPath = cfg.chatConfigPath
+    ? (isAbsolute(cfg.chatConfigPath)
+        ? cfg.chatConfigPath
+        : join(process.cwd(), cfg.chatConfigPath))
+    : undefined;
+
+  // Load optional default chat settings from JSON
+  let defaultChat = chatCfgPath && existsSync(chatCfgPath) ? loadChatDefault(chatCfgPath) : null;
+
+  const ai = new OpenAIClient(cfg.openaiApiKey, cfg.openaiModel);
+
+  // Rate limits: per-user 1/min, per-channel 20/min
+  const userLimiter = new RateLimiter({ capacity: 1, refillTokens: 1, refillIntervalMs: 60_000 });
+  const channelLimiter = new RateLimiter({ capacity: 20, refillTokens: 20, refillIntervalMs: 60_000 });
+
+  app.event('app_mention', async ({ event, client, logger }) => {
+    try {
+      const ev = event as any;
+      if (!inAllowedChannelChat(cfg, ev.channel)) return;
+
+      // Delegate "leaderboard" to the boom feature
+      if (cleanedLower(ev.text) === 'leaderboard') return;
+
+      // Basic rate limiting with admin bypass
+      const bypass = await shouldBypassRateLimit(client as any, ev.user);
+      if (!bypass) {
+        const uok = userLimiter.consume('user', ev.user);
+        const cok = channelLimiter.consume('channel', ev.channel);
+        if (!uok || !cok) {
+          try {
+            await client.chat.postEphemeral({
+              channel: ev.channel,
+              user: ev.user,
+              text: 'Easy there — you are rate limited. Try again in a minute.',
+            });
+          } catch {}
+          return;
+        }
+      } else {
+        logger?.debug?.({ userId: ev.user, channel: ev.channel }, 'admin/owner bypassed rate limit');
+      }
+
+      const raw = String(ev.text || '');
+      const afterBot = stripLeadingBotMention(raw);
+      const afterBotTrim = afterBot.trim();
+      const replyThreadTs = preferredThreadTs(cfg, ev);
+
+      // Admin-only: update the top-level default system prompt from Slack
+      // Syntax: "@bot chat update default prompt <new system prompt>" (also accepts "set")
+      const updateDefaultMatch =
+        afterBotTrim.match(/^chat\s+(?:set|update)\s+default\s+prompt\s+([\s\S]+)$/i) ||
+        afterBotTrim.match(/^(?:set|update)\s+default\s+prompt\s+([\s\S]+)$/i);
+      if (updateDefaultMatch) {
+        const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
+        if (!isAdmin) {
+          try {
+            await client.chat.postEphemeral({
+              channel: ev.channel,
+              user: ev.user,
+              text: 'Only workspace admins or users in ADMIN_USER_IDS may update defaults.',
+            });
+          } catch {}
+          return;
+        }
+
+        if (!chatCfgPath) {
+          try {
+            await client.chat.postEphemeral({
+              channel: ev.channel,
+              user: ev.user,
+              text: 'Chat config path not set. Set CHAT_CONFIG to a writable JSON file (e.g., data/chat-config.json).',
+            });
+          } catch {}
+          return;
+        }
+
+        const newPrompt = updateDefaultMatch[1].trim();
+        try {
+          const updatedDefault = updateDefaultPromptOnDisk(chatCfgPath, newPrompt);
+          defaultChat = updatedDefault; // hot-reload in-memory default
+          await client.chat.postEphemeral({
+            channel: ev.channel,
+            user: ev.user,
+            text: 'Updated default system prompt.',
+          });
+        } catch (e) {
+          await client.chat.postEphemeral({
+            channel: ev.channel,
+            user: ev.user,
+            text: `Failed to update default prompt: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        }
+        return;
+      }
+
+      if (!ai.enabled()) {
+        try {
+          await client.chat.postEphemeral({
+            channel: ev.channel,
+            user: ev.user,
+            text: 'AI is not configured. Set OPENAI_API_KEY to enable chat.',
+          });
+        } catch {}
+        return;
+      }
+
+      // Prepare per-channel history array
+      let hist = channelHistory.get(ev.channel);
+      if (!hist) {
+        hist = [];
+        channelHistory.set(ev.channel, hist);
+      }
+
+      // Append current user message (clip input length)
+      const userMsg: ChatEntry = {
+        role: 'user',
+        text: clipInput(afterBotTrim, cfg.chatInputMaxChars),
+        ts: String(ev.ts || ''),
+      };
+      hist.push(userMsg);
+
+      // Prune by configured caps
+      pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
+
+      // Build transcript string
+      const transcript = buildTranscript(hist, cfg.chatHistoryMaxChars);
+
+      if (process.env.LOG_LEVEL === 'debug') {
+        logger?.debug?.(
+          {
+            channel: ev.channel,
+            entries: hist.length,
+            chatHistoryMaxTurns: cfg.chatHistoryMaxTurns,
+            chatHistoryMaxChars: cfg.chatHistoryMaxChars,
+            chatReplyMaxTokens: cfg.chatReplyMaxTokens,
+            chatTemperature: cfg.chatTemperature,
+          },
+          'chat: invoking OpenAI'
+        );
+      }
+
+      const out = await ai.chat(`${transcript}\n\nAssistant:`, {
+        temperature: defaultChat?.temperature ?? cfg.chatTemperature,
+        maxTokens: defaultChat?.maxTokens ?? cfg.chatReplyMaxTokens,
+        systemPrompt: defaultChat?.systemPrompt ?? cfg.chatSystemPrompt,
+      });
+
+      // Send reply per default reply mode
+      const reply = truncate(out, 1500); // keep Slack-friendly; model already capped
+      const post: any = { channel: ev.channel, text: reply };
+      if (replyThreadTs) post.thread_ts = replyThreadTs;
+      await client.chat.postMessage(post);
+
+      // Append assistant message and prune again
+      hist.push({ role: 'assistant', text: reply, ts: String(Date.now()) });
+      pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
+    } catch (err) {
+      logger?.error?.(err);
+    }
+  });
+}

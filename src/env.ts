@@ -12,11 +12,11 @@ export type Config = {
   defaultReplyMode: 'thread' | 'channel';
 
   // New feature/config fields
-  features: Set<string>; // e.g., {'boom','fun'}
-  funAllowedChannels?: Set<string>; // override for Fun bundle if provided
-  funConfigPath?: string; // JSON file with fun commands, default data/fun-commands.json
+  features: Set<string>; // e.g., {'boom','chat'}
+  chatAllowedChannels?: Set<string>; // override for Chat bundle if provided
+  chatConfigPath?: string; // JSON file with chat defaults, default data/chat-config.json
 
-  // OpenAI configuration (Fun bundle)
+  // OpenAI configuration
   openaiApiKey?: string;
   openaiModel: string; // default: gpt-4.1-nano
 
@@ -47,7 +47,7 @@ export function loadConfig(): Config {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const funAllowedChannelsArr = (process.env.FUN_ALLOWED_CHANNELS || '')
+  const chatAllowedChannelsArr = (process.env.CHAT_ALLOWED_CHANNELS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
@@ -56,19 +56,19 @@ export function loadConfig(): Config {
   const defaultReplyMode = (process.env.DEFAULT_REPLY_MODE || 'channel') as Config['defaultReplyMode'];
 
   // Features toggle (default both enabled)
-  const featuresStr = process.env.FEATURES || 'boom,fun';
+  const featuresStr = process.env.FEATURES || 'boom,chat';
   const featuresList = featuresStr
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   const features = new Set(featuresList);
 
-  // OpenAI config (Fun bundle)
+  // OpenAI config
   const openaiApiKey = process.env.OPENAI_API_KEY;
   const openaiModel = process.env.OPENAI_MODEL || 'gpt-4.1-nano';
 
-  // Fun config file path
-  const funConfigPath = process.env.FUN_CONFIG || 'data/fun-commands.json';
+  // Chat config file path (optional defaults for chat)
+  const chatConfigPath = process.env.CHAT_CONFIG || 'data/chat-config.json';
 
   // Chat fallback config (in-memory)
   const chatEnabled = parseBool(process.env.CHAT_ENABLED, !!openaiApiKey);
@@ -104,8 +104,8 @@ export function loadConfig(): Config {
 
     // New fields
     features,
-    funAllowedChannels: funAllowedChannelsArr.length ? new Set(funAllowedChannelsArr) : undefined,
-    funConfigPath,
+    chatAllowedChannels: chatAllowedChannelsArr.length ? new Set(chatAllowedChannelsArr) : undefined,
+    chatConfigPath,
     openaiApiKey,
     openaiModel,
 

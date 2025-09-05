@@ -9,18 +9,16 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
   - Count valid emoji posts; when thresholds met (≥3 of each), post daily podium + week-to-date leaderboard
   - Immediately crown weekly winner(s) after Friday :boom: placement; leaderboard resets weekly (Mon)
   - If any boom emoji is posted outside the window, after a game’s podium is full, or after the day is closed, the bot adds a :clown_face: reaction on that message
-- Fun interactions (mentions):
-  - Commands are optional and defined via `FUN_CONFIG` (see `data/fun-commands.json.example`). There are no built-in defaults.
-  - If no commands are configured, only the chat fallback (below) is used for non-"leaderboard" mentions.
-  - Rate limits: 1 request per user per minute, 20 requests per channel per minute
-- Chat fallback for non-command mentions:
-  - When a user mentions the bot and it’s not a defined Fun command (and not "leaderboard"), the bot replies using an AI fallback.
+- Chat (mentions):
+  - AI-powered chat replies when a user mentions the bot (except "leaderboard", handled by Boom).
   - History is in-memory only, keyed by channel, and pruned by configurable caps. Replies honor `DEFAULT_REPLY_MODE` (thread or channel).
-  - Configure via CHAT_* env vars; see docs/CONFIG.md.
+  - Configure via CHAT_* env vars; optional `CHAT_CONFIG` file for default `systemPrompt`, `temperature`, and `maxTokens`.
+  - Admin-only update of the default prompt from Slack: `@bot chat update default prompt <new system prompt>`.
+  - Rate limits: 1 request per user per minute, 20 requests per channel per minute
 - Socket Mode by default; optional Events API
 - Incoming event logging to aid development
 - Channel allowlist and dedupe middleware in place
-- Feature toggles via `FEATURES` env (default: `boom,fun`)
+- Feature toggles via `FEATURES` env (default: `boom,chat`)
 
 ## Setup
 1. Create a Slack app and bot user. See `docs/SETUP.md`.
@@ -55,7 +53,7 @@ See `docs/CONFIG.md` for more details.
   - `channels:history` (public channels) and optionally `groups:history` (private channels)
   - `reactions:write` (to add reactions for wins and clowning)
 - Event Subscriptions → Subscribe to bot events:
-  - `app_mention` (for fun commands)
+  - `app_mention` (for chat)
   - `message.channels` (public channel messages)
   - `message.groups` (private channels, if used)
 - Reinstall the app after adding scopes/events, then invite it to your channels.

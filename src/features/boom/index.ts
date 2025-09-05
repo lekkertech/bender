@@ -150,7 +150,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       // Strip all mention tokens like <@U123ABC> and trim; trigger only on exact "leaderboard" (case-insensitive)
       const cleaned = String(ev.text || '').replace(/<@[^>]+>/g, '').trim();
       if (cleaned.toLowerCase() !== 'leaderboard') {
-        // Only handle leaderboard here; other mention commands belong to fun feature
+        // Only handle leaderboard here; other mention interactions are handled by the chat feature
         return;
       }
 
