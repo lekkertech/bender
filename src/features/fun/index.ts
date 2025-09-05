@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt';
 import type { Config } from '../../env.js';
 import { OpenAIClient } from '../../ai/openai.js';
 import { RateLimiter } from '../../util/rateLimit.js';
+import { shouldBypassRateLimit } from '../../util/admin.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
@@ -166,18 +167,23 @@ export function registerFunFeature(app: App, cfg: Config) {
       // Delegate "leaderboard" to the boom feature
       if (cleanedLower(ev.text) === 'leaderboard') return;
 
-      // Basic rate limiting
-      const uok = userLimiter.consume('user', ev.user);
-      const cok = channelLimiter.consume('channel', ev.channel);
-      if (!uok || !cok) {
-        try {
-          await client.chat.postEphemeral({
-            channel: ev.channel,
-            user: ev.user,
-            text: 'Easy there — you are rate limited. Try again in a minute.',
-          });
-        } catch {}
-        return;
+      // Basic rate limiting with admin bypass
+      const bypass = await shouldBypassRateLimit(client as any, ev.user);
+      if (!bypass) {
+        const uok = userLimiter.consume('user', ev.user);
+        const cok = channelLimiter.consume('channel', ev.channel);
+        if (!uok || !cok) {
+          try {
+            await client.chat.postEphemeral({
+              channel: ev.channel,
+              user: ev.user,
+              text: 'Easy there — you are rate limited. Try again in a minute.',
+            });
+          } catch {}
+          return;
+        }
+      } else {
+        logger?.debug?.({ userId: ev.user, channel: ev.channel }, 'admin/owner bypassed rate limit');
       }
 
       if (!ai.enabled()) {
