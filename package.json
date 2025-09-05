@@ -15,7 +15,8 @@
   "dependencies": {
     "@slack/bolt": "^3.17.1",
     "dotenv": "^16.4.5",
-    "luxon": "^3.5.0"
+    "luxon": "^3.5.0",
+    "openai": "^5.19.1"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",

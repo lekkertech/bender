@@ -3,18 +3,24 @@
 Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no public URL), with optional Events API (HTTP) support.
 
 ## Features
-- Boom Game rules implementation (no commands):
+- Boom Game module (isolated):
   - Detect single-emoji messages in `#capetown` between 12:00:00–12:59:59
   - Per-game podium scoring: 1st=5, 2nd=3, 3rd=1 (unique users)
   - Count valid emoji posts; when thresholds met (≥3 of each), post daily podium + week-to-date leaderboard
   - Immediately crown weekly winner(s) after Friday :boom: placement; leaderboard resets weekly (Mon)
   - If any boom emoji is posted outside the window, after a game’s podium is full, or after the day is closed, the bot adds a :clown_face: reaction on that message
+- Fun interactions (mentions):
+  - `@bot haiku <topic>`
+  - `@bot roast @user [spicy]` and `@bot compliment @user`
+  - `@bot emojify <text>`, `@bot slang za <text>`, `@bot dadjoke>`
+  - Rate limits: 1 request per user per minute, 20 requests per channel per minute
 - Socket Mode by default; optional Events API
 - Incoming event logging to aid development
 - Channel allowlist and dedupe middleware in place
+- Feature toggles via `FEATURES` env (default: `boom,fun`)
 
 ## Setup
-1. Create a Slack app and bot user. See `../slack-bot-docs/docs/SETUP.md`.
+1. Create a Slack app and bot user. See `docs/SETUP.md`.
 2. Copy `.env.example` to `.env` and fill values.
 3. Install deps and run locally:
    ```bash
@@ -30,7 +36,7 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
 - Socket Mode (default): requires `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`.
 - Events API: requires `SLACK_SIGNING_SECRET` and `SLACK_BOT_TOKEN` (and a public HTTPS URL).
 
-See `../slack-bot-docs/docs/CONFIG.md` for more details.
+See `docs/CONFIG.md` for more details.
 
 ## Scripts
 - `npm run dev` — run with tsx (watch mode)
@@ -39,15 +45,17 @@ See `../slack-bot-docs/docs/CONFIG.md` for more details.
 - `npm start` — run compiled app from `dist/`
  - `npm run serve` — production runner (builds if needed, then starts)
 
-## Slack Configuration for Boom Game
+## Slack Configuration
 - Bot Token Scopes:
   - `chat:write`
-  - `groups:history` (private channel messages)
+  - `app_mentions:read`
+  - `channels:history` (public channels) and optionally `groups:history` (private channels)
   - `reactions:write` (to add reactions for wins and clowning)
 - Event Subscriptions → Subscribe to bot events:
-  - `message.groups`
-  - (Mention events are not required for scoring.)
-- Reinstall the app after adding scopes/events, then invite it to `#capetown`.
+  - `app_mention` (for fun commands)
+  - `message.channels` (public channel messages)
+  - `message.groups` (private channels, if used)
+- Reinstall the app after adding scopes/events, then invite it to your channels.
 
 ## Config
 - Set in `.env`:

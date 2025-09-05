@@ -1,0 +1,55 @@
+{
+  "commands": [
+    {
+      "name": "haiku",
+      "pattern": "^haiku\\s+(.+)$",
+      "promptTemplate": "Write a 3-line haiku in 5-7-5 syllable form about: {{arg1}}. No intro, no backticks, just the haiku. Keep it concise.",
+      "temperature": 0.7,
+      "maxTokens": 90,
+      "help": "haiku <topic>"
+    },
+    {
+      "name": "roast",
+      "pattern": "^roast\\s+(<@[^>]+>)(?:\\s+(spicy))?\\s*$",
+      "promptTemplate": "Write a {{variant}} one-liner roast for {{arg1}}. Be witty and brief (max 25 words). No preambles. Return a single line.",
+      "temperature": 0.9,
+      "maxTokens": 80,
+      "help": "roast <@user> [spicy]",
+      "variantGroup": 2,
+      "variantThen": "spicy",
+      "variantElse": "playful, mild"
+    },
+    {
+      "name": "compliment",
+      "pattern": "^compliment\\s+(<@[^>]+>)\\s*$",
+      "promptTemplate": "Give a sincere, upbeat one-liner compliment for {{arg1}}. Keep it under 25 words. No preambles.",
+      "temperature": 0.8,
+      "maxTokens": 80,
+      "help": "compliment <@user>"
+    },
+    {
+      "name": "emojify",
+      "pattern": "^emojify\\s+(.+)$",
+      "promptTemplate": "Translate the following into a short emoji sequence that conveys the meaning. Avoid words unless necessary. Text: {{arg1}}",
+      "temperature": 0.8,
+      "maxTokens": 80,
+      "help": "emojify <text>"
+    },
+    {
+      "name": "slang-za",
+      "pattern": "^slang\\s+za\\s+(.+)$",
+      "promptTemplate": "Rewrite the following into South African slang while staying friendly and clear. Keep it concise and fun. Original: {{arg1}}",
+      "temperature": 0.9,
+      "maxTokens": 120,
+      "help": "slang za <text>"
+    },
+    {
+      "name": "dadjoke",
+      "pattern": "^dadjoke\\b",
+      "promptTemplate": "Tell one clean dad joke. Return a single short joke with setup and punchline.",
+      "temperature": 0.9,
+      "maxTokens": 120,
+      "help": "dadjoke"
+    }
+  ]
+}
