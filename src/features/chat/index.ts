@@ -98,6 +98,37 @@ function loadChatDefault(fp: string | undefined): ChatDefaultConfig | null {
 }
 
 /**
+ * Chat config file shape.
+ */
+type PromptRecord = {
+  text: string;
+  setById: string;
+  setByName?: string;
+  ts: string; // ISO8601
+};
+type ChatConfigFile = {
+  default?: ChatDefaultConfig;
+  defaultChat?: ChatDefaultConfig; // legacy support
+  promptHistory?: PromptRecord[];
+};
+
+/**
+ * Load full chat config (default + history).
+ */
+function loadChatConfig(fp: string | undefined): ChatConfigFile | null {
+  try {
+    if (!fp) return null;
+    const raw = readFileSync(fp, 'utf8');
+    const parsed = JSON.parse(raw) as ChatConfigFile;
+    const def = parsed?.default ?? parsed?.defaultChat;
+    const hist = Array.isArray(parsed?.promptHistory) ? parsed!.promptHistory! : [];
+    return { default: def, promptHistory: hist };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Atomically write JSON to disk by writing to a temp file and renaming.
  */
 function writeJsonAtomic(fp: string, obj: any): void {
@@ -107,14 +138,25 @@ function writeJsonAtomic(fp: string, obj: any): void {
 }
 
 /**
- * Update the top-level default systemPrompt on disk. Returns updated defaultChat.
- * This preserves existing temperature/maxTokens if present.
+ * Update the top-level default systemPrompt on disk and append a history record.
+ * Keeps only the last 10 history entries. Returns updated default + history.
  */
-function updateDefaultPromptOnDisk(fp: string, newPrompt: string): ChatDefaultConfig {
-  const currentDefault = loadChatDefault(fp) || {};
-  const updatedDefault: ChatDefaultConfig = { ...currentDefault, systemPrompt: newPrompt };
+function updateDefaultPromptOnDisk(
+  fp: string,
+  newPrompt: string,
+  setter: { id: string; name?: string }
+): { defaultChat: ChatDefaultConfig; promptHistory: PromptRecord[] } {
+  const current = loadChatConfig(fp) || { default: {}, promptHistory: [] };
+  const updatedDefault: ChatDefaultConfig = { ...(current.default || {}), systemPrompt: newPrompt };
 
-  // Persist minimal file with only default block; commands are no longer used
+  const rec: PromptRecord = {
+    text: newPrompt,
+    setById: setter.id,
+    setByName: setter.name,
+    ts: new Date().toISOString(),
+  };
+  const history = [rec, ...(current.promptHistory || [])].slice(0, 10);
+
   const out: any = {};
   if (
     updatedDefault &&
@@ -124,8 +166,10 @@ function updateDefaultPromptOnDisk(fp: string, newPrompt: string): ChatDefaultCo
   ) {
     out.default = updatedDefault;
   }
+  out.promptHistory = history;
+
   writeJsonAtomic(fp, out);
-  return updatedDefault;
+  return { defaultChat: updatedDefault, promptHistory: history };
 }
 
 export function registerChatFeature(app: App, cfg: Config) {
@@ -137,7 +181,8 @@ export function registerChatFeature(app: App, cfg: Config) {
     : undefined;
 
   // Load optional default chat settings from JSON
-  let defaultChat = chatCfgPath && existsSync(chatCfgPath) ? loadChatDefault(chatCfgPath) : null;
+  const initialCfg = chatCfgPath && existsSync(chatCfgPath) ? loadChatConfig(chatCfgPath) : null;
+  let defaultChat = initialCfg?.default || initialCfg?.defaultChat || null;
 
   const ai = new OpenAIClient(cfg.openaiApiKey, cfg.openaiModel);
 
@@ -177,6 +222,42 @@ export function registerChatFeature(app: App, cfg: Config) {
       const afterBotTrim = afterBot.trim();
       const replyThreadTs = preferredThreadTs(cfg, ev);
 
+      // Show current prompt (any user)
+      // Syntax: "@bot chat show prompt" or "@bot show prompt"
+      const showPromptMatch =
+        afterBotTrim.match(/^chat\s+(?:show|current)\s+prompt\s*$/i) ||
+        afterBotTrim.match(/^(?:show|current)\s+prompt\s*$/i);
+      if (showPromptMatch) {
+        const effective = ((defaultChat?.systemPrompt ?? cfg.chatSystemPrompt) || '').trim();
+        let meta = null as null | { by?: string; when?: string };
+        if (chatCfgPath && existsSync(chatCfgPath)) {
+          const file = loadChatConfig(chatCfgPath);
+          const last = file?.promptHistory && file.promptHistory[0];
+          if (last) {
+            meta = {
+              by: last.setById ? `<@${last.setById}>${last.setByName ? ` (${last.setByName})` : ''}` : undefined,
+              when: last.ts,
+            };
+          }
+        }
+        const lines: string[] = [];
+        lines.push('*Current chat system prompt:*');
+        lines.push(effective ? effective : '_using built-in default (CHAT_SYSTEM_PROMPT)_');
+        if (meta?.by || meta?.when) {
+          lines.push('');
+          lines.push(`Last set by: ${meta.by ?? 'n/a'}`);
+          lines.push(`When: ${meta.when ?? 'n/a'}`);
+        }
+        try {
+          await client.chat.postEphemeral({
+            channel: ev.channel,
+            user: ev.user,
+            text: lines.join('\n'),
+          });
+        } catch {}
+        return;
+      }
+
       // Admin-only: update the top-level default system prompt from Slack
       // Syntax: "@bot chat update default prompt <new system prompt>" (also accepts "set")
       const updateDefaultMatch =
@@ -207,13 +288,26 @@ export function registerChatFeature(app: App, cfg: Config) {
         }
 
         const newPrompt = updateDefaultMatch[1].trim();
+
+        // Try resolve a human-friendly name (best-effort)
+        let setterName: string | undefined;
         try {
-          const updatedDefault = updateDefaultPromptOnDisk(chatCfgPath, newPrompt);
-          defaultChat = updatedDefault; // hot-reload in-memory default
+          const info: any = await (client as any)?.users?.info?.({ user: ev.user });
+          const user = info?.user;
+          const profile = user?.profile || {};
+          setterName =
+            (profile.display_name && String(profile.display_name).trim()) ||
+            (profile.real_name && String(profile.real_name).trim()) ||
+            (user?.name ? String(user.name) : undefined);
+        } catch {}
+
+        try {
+          const res = updateDefaultPromptOnDisk(chatCfgPath, newPrompt, { id: ev.user, name: setterName });
+          defaultChat = res.defaultChat; // hot-reload in-memory default
           await client.chat.postEphemeral({
             channel: ev.channel,
             user: ev.user,
-            text: 'Updated default system prompt.',
+            text: `Updated default system prompt. Kept ${res.promptHistory.length} in history (latest 10).`,
           });
         } catch (e) {
           await client.chat.postEphemeral({
