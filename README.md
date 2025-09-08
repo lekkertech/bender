@@ -14,6 +14,7 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
   - History is in-memory only, keyed by channel, and pruned by configurable caps. Replies honor `DEFAULT_REPLY_MODE` (thread or channel).
   - Configure via CHAT_* env vars; optional `CHAT_CONFIG` file for default `systemPrompt`, `temperature`, and `maxTokens`.
   - Admin-only update of the default prompt from Slack: `@bot chat update default prompt <new system prompt>`.
+  - Admin-only context commands: `@bot clear chat` (clears current channel context) and `@bot clear chat all` (clears all channel contexts). Replies are sent as ephemeral confirmations.
   - Rate limits: 1 request per user per minute, 20 requests per channel per minute
 - Socket Mode by default; optional Events API
 - Incoming event logging to aid development

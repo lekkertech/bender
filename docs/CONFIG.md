@@ -69,4 +69,7 @@ OPENAI_MODEL=gpt-4.1-nano
 - State: in-memory only, keyed by channel id; history is lost on restart.
 - Bounded context: trims to `CHAT_HISTORY_MAX_TURNS` and `CHAT_HISTORY_MAX_CHARS`; each incoming message is clipped to `CHAT_INPUT_MAX_CHARS`.
 - OpenAI call: uses `CHAT_SYSTEM_PROMPT`, `CHAT_TEMPERATURE`, and `CHAT_REPLY_MAX_TOKENS` (and optionally overrides from `CHAT_CONFIG`).
+- Admin-only commands (require workspace admin or `ADMIN_USER_IDS`):
+  - `@bot clear chat` — Clears the current channel’s chat context (in-memory history for that channel). Ephemeral confirmation is sent to the requester.
+  - `@bot clear chat all` — Clears chat contexts for all channels. Ephemeral confirmation includes total channels and messages cleared.
 

@@ -198,6 +198,65 @@ export function registerChatFeature(app: App, cfg: Config) {
       // Delegate "leaderboard" to the boom feature
       if (cleanedLower(ev.text) === 'leaderboard') return;
 
+      // Admin-only: clear in-memory chat context
+      // Syntax:
+      //   "@bot clear chat" or "@bot clear context"        → clear current channel
+      //   "@bot clear chat all" or "@bot clear context all" → clear all channels
+      {
+        const rawText = String(ev.text || '');
+        const afterBotTrimEarly = stripLeadingBotMention(rawText).trim();
+
+        const clearAllMatch = afterBotTrimEarly.match(/^clear\s+(chat|context)\s+all\s*$/i);
+        const clearOneMatch = clearAllMatch ? null : afterBotTrimEarly.match(/^clear\s+(chat|context)\s*$/i);
+
+        if (clearAllMatch || clearOneMatch) {
+          const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
+          if (!isAdmin) {
+            try {
+              await client.chat.postEphemeral({
+                channel: ev.channel,
+                user: ev.user,
+                text: 'Only workspace admins or users in ADMIN_USER_IDS may clear chat context.',
+              });
+            } catch {}
+            return;
+          }
+
+          if (clearAllMatch) {
+            let totalEntries = 0;
+            for (const arr of channelHistory.values()) totalEntries += arr.length;
+            const channels = channelHistory.size;
+            channelHistory.clear();
+            if (process.env.LOG_LEVEL === 'debug') {
+              logger?.debug?.({ userId: ev.user, channels, totalEntries }, 'chat: cleared all channel contexts');
+            }
+            try {
+              await client.chat.postEphemeral({
+                channel: ev.channel,
+                user: ev.user,
+                text: `Cleared chat context for ${channels} channel${channels === 1 ? '' : 's'} (${totalEntries} message${totalEntries === 1 ? '' : 's'}).`,
+              });
+            } catch {}
+            return;
+          } else {
+            const hist = channelHistory.get(ev.channel) || [];
+            const entries = hist.length;
+            channelHistory.delete(ev.channel);
+            if (process.env.LOG_LEVEL === 'debug') {
+              logger?.debug?.({ userId: ev.user, channel: ev.channel, entries }, 'chat: cleared channel context');
+            }
+            try {
+              await client.chat.postEphemeral({
+                channel: ev.channel,
+                user: ev.user,
+                text: `Cleared chat context for this channel (${entries} message${entries === 1 ? '' : 's'}).`,
+              });
+            } catch {}
+            return;
+          }
+        }
+      }
+
       // Basic rate limiting with admin bypass
       const bypass = await shouldBypassRateLimit(client as any, ev.user);
       if (!bypass) {
