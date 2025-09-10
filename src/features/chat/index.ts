@@ -8,7 +8,7 @@ import { isAbsolute, join } from 'node:path';
 
 // In-memory, channel-scoped chat history (lost on restart)
 type ChatRole = 'user' | 'assistant';
-type ChatEntry = { role: ChatRole; text: string; ts: string };
+type ChatEntry = { role: ChatRole; text: string; ts: string; uid?: string; author?: string };
 const channelHistory = new Map<string, ChatEntry[]>();
 
 function clipInput(s: string, max: number): string {
@@ -35,7 +35,8 @@ function pruneHistoryInPlace(arr: ChatEntry[], maxTurns: number, maxChars: numbe
 
 function buildTranscript(arr: ChatEntry[], maxChars: number): string {
   // Render chronological; if still too long, drop from the start until within cap
-  const lines = arr.map((e) => `${e.role === 'user' ? 'User' : 'Assistant'}: ${e.text}`);
+  const labelFor = (e: ChatEntry) => e.author != null ? e.author : (e.role === 'user' ? (e.uid ? `<@${e.uid}>` : 'User') : 'Assistant');
+  const lines = arr.map((e) => `${labelFor(e)}: ${e.text}`);
   let start = 0;
   let text = lines.join('\n');
   while (text.length > maxChars && start < lines.length - 1) {
@@ -198,8 +199,8 @@ export function registerChatFeature(app: App, cfg: Config) {
       channelHistory.set(channelId, hist);
     }
     const clipped: ChatEntry = { ...entry, text: clipInput(entry.text, cfg.chatInputMaxChars) };
-    // Deduplicate by (ts, role) only, so app_mention and message listeners don't double-store the same message
-    const exists = hist.some((e) => e.ts === clipped.ts && e.role === clipped.role);
+    // Deduplicate by ts to avoid double-capturing the same Slack message across listeners
+    const exists = hist.some((e) => e.ts === clipped.ts);
     if (exists) return;
     hist.push(clipped);
     pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
@@ -220,7 +221,11 @@ export function registerChatFeature(app: App, cfg: Config) {
       const textRaw = String(m.text || '');
       if (!tsStr || !textRaw) return;
  
-      pushHistory(m.channel, { role: 'user', text: textRaw, ts: tsStr });
+      const role: ChatRole = st === 'bot_message' ? 'assistant' : 'user';
+      const uid = typeof m.user === 'string' ? m.user : undefined;
+      const author = role === 'assistant' ? (m.username ? String(m.username) : 'Assistant') : undefined;
+ 
+      pushHistory(m.channel, { role, text: textRaw, ts: tsStr, uid, author });
     } catch (err) {
       logger?.error?.(err);
     }
@@ -487,6 +492,7 @@ export function registerChatFeature(app: App, cfg: Config) {
         role: 'user',
         text: clipInput(afterBotTrim, cfg.chatInputMaxChars),
         ts: String(ev.ts || ''),
+        uid: String(ev.user || ''),
       };
       pushHistory(ev.channel, userMsg);
       // Refresh local reference (pushHistory may have pruned or deduped)
