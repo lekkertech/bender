@@ -339,9 +339,8 @@ export function registerChatFeature(app: App, cfg: Config) {
           }
 
           try {
-            await client.chat.postEphemeral({
+            await client.chat.postMessage({
               channel: ev.channel,
-              user: ev.user,
               text: lines.join('\n'),
             });
           } catch {}
