@@ -257,6 +257,61 @@ export function registerChatFeature(app: App, cfg: Config) {
         }
       }
 
+      // Admin-only: show in-memory chat context for debugging
+      // Syntax: "@bot context" (single word)
+      {
+        const rawText = String(ev.text || '');
+        const afterBotTrimEarly = stripLeadingBotMention(rawText).trim();
+        const showContext = /^context$/i.test(afterBotTrimEarly);
+        if (showContext) {
+          const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
+          if (!isAdmin) {
+            try {
+              await client.chat.postEphemeral({
+                channel: ev.channel,
+                user: ev.user,
+                text: 'Only workspace admins or users in ADMIN_USER_IDS may view chat context.',
+              });
+            } catch {}
+            return;
+          }
+
+          const lines: string[] = [];
+          const chId = String(ev.channel || '');
+          const hist = channelHistory.get(chId) || [];
+
+          // Current channel context
+          lines.push('*Chat Context — Current Channel*');
+          if (!hist.length) {
+            lines.push('_No history for this channel._');
+          } else {
+            // Cap transcript length for safety
+            const transcript = buildTranscript(hist, Math.min(cfg.chatHistoryMaxChars, 3500));
+            lines.push(transcript);
+          }
+
+          // All channels summary
+          lines.push('');
+          lines.push('*Chat Context — All Channels*');
+          const all = Array.from(channelHistory.entries());
+          lines.push(`Total channels with history: ${all.length}`);
+          if (all.length) {
+            for (const [cid, arr] of all) {
+              const n = arr.length;
+              lines.push(`• ${cid} — ${n} entr${n === 1 ? 'y' : 'ies'}`);
+            }
+          }
+
+          try {
+            await client.chat.postEphemeral({
+              channel: ev.channel,
+              user: ev.user,
+              text: lines.join('\n'),
+            });
+          } catch {}
+          return;
+        }
+      }
       // Basic rate limiting with admin bypass
       const bypass = await shouldBypassRateLimit(client as any, ev.user);
       if (!bypass) {

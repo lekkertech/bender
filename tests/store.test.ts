@@ -96,4 +96,19 @@ describe('Store', () => {
       expect(latest!.winners).toEqual(['U2', 'U3']);
       expect(latest!.points).toBe(9);
     }));
+  it('computes podium by earliest message ts, independent of arrival order', () =>
+    withStore((db) => {
+      const d = '2025-03-03';
+      // Simulate out-of-order arrival: later ts first, earlier ts second
+      db.addPlacement(d, 'boom', 'U1', '1757498400.276939', 'C1'); // later
+      db.addPlacement(d, 'boom', 'U2', '1757498400.275209', 'C1'); // earlier
+      // Podium should be ordered by ts (earliest first)
+      expect(db.getPlacements(d, 'boom')).toEqual(['U2', 'U1']);
+
+      // Weekly totals should award 5 to U2 (1st) and 3 to U1 (2nd)
+      const totals = db.weeklyTotals('2025-03-03', '2025-03-07');
+      const map = new Map(totals.map((r) => [r.user_id, r.points]));
+      expect(map.get('U2')).toBe(5);
+      expect(map.get('U1')).toBe(3);
+    }));
 });

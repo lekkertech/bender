@@ -73,7 +73,8 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const count = db.incrementCount(date, game);
 
       // Podium placements 1st/2nd/3rd (unique users). After 3, further posts are clowned above.
-      const position = db.addPlacement(date, game, m.user);
+      // Pass Slack message timestamp so placements are decided by earliest ts, not arrival order.
+      const position = db.addPlacement(date, game, m.user, tsStr, m.channel);
       if (position === 1) {
         // Optional: react with the game emoji for first place
         try {
