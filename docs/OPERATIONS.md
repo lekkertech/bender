@@ -50,3 +50,18 @@ Relevant implementation:
 - Store (timestamp-based podium, raw messages, crown monotonicity): [src/features/boom/store.ts](../src/features/boom/store.ts)
 - Boom feature handler (passes Slack `ts` into Store): [src/features/boom/index.ts](../src/features/boom/index.ts)
 - Tests (coverage for out-of-order timestamps): [tests/store.test.ts](../tests/store.test.ts)
+
+## Chat Passive History Capture
+
+Effective 2025-09-10, the chat feature records all messages in allowed channels (both top-level and thread replies), including posts from human users and bot/integrations. This expands context beyond only direct mentions to the bot.
+
+Details:
+- Scope: all messages in allowed channels, including thread replies and bot/integration posts.
+- Dedupe: entries are deduplicated by (channel_id, ts, role) to avoid double-storing the same message across different handlers.
+- Pruning: same caps as before — bounded by chatHistoryMaxTurns and chatHistoryMaxChars.
+- Assistant replies: not explicitly appended by the chat feature; they are captured passively via the message event stream.
+
+Operational notes:
+- Ensure CHAT_ALLOWED_CHANNELS limits where context is accumulated, if desired.
+- If you need to clear context: use the admin-only “@bot clear chat [all]” commands.
+- For debugging, “@bot context” shows the current channel transcript and high-level counts across channels.

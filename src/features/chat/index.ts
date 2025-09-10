@@ -185,11 +185,47 @@ export function registerChatFeature(app: App, cfg: Config) {
   let defaultChat = initialCfg?.default || initialCfg?.defaultChat || null;
 
   const ai = new OpenAIClient(cfg.openaiApiKey, cfg.openaiModel);
-
+ 
   // Rate limits: per-user 1/min, per-channel 20/min
   const userLimiter = new RateLimiter({ capacity: 1, refillTokens: 1, refillIntervalMs: 60_000 });
   const channelLimiter = new RateLimiter({ capacity: 20, refillTokens: 20, refillIntervalMs: 60_000 });
-
+ 
+  // Helper to safely append to channel history with dedupe + pruning
+  const pushHistory = (channelId: string, entry: ChatEntry) => {
+    let hist = channelHistory.get(channelId);
+    if (!hist) {
+      hist = [];
+      channelHistory.set(channelId, hist);
+    }
+    const clipped: ChatEntry = { ...entry, text: clipInput(entry.text, cfg.chatInputMaxChars) };
+    // Deduplicate by (ts, role) only, so app_mention and message listeners don't double-store the same message
+    const exists = hist.some((e) => e.ts === clipped.ts && e.role === clipped.role);
+    if (exists) return;
+    hist.push(clipped);
+    pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
+  };
+ 
+  // Passive capture: record all channel messages (users and bots), both top-level and thread replies.
+  app.message(async ({ message, logger }) => {
+    try {
+      const m = message as any;
+      if (!m) return;
+      if (!inAllowedChannelChat(cfg, m.channel)) return;
+ 
+      // Ignore edits/deletes to avoid noisy duplicates; capture initial posts including bot_message and thread_broadcast
+      const st = String(m.subtype || '');
+      if (st === 'message_changed' || st === 'message_deleted') return;
+ 
+      const tsStr = String(m.ts || '');
+      const textRaw = String(m.text || '');
+      if (!tsStr || !textRaw) return;
+ 
+      pushHistory(m.channel, { role: 'user', text: textRaw, ts: tsStr });
+    } catch (err) {
+      logger?.error?.(err);
+    }
+  });
+ 
   app.event('app_mention', async ({ event, client, logger }) => {
     try {
       const ev = event as any;
@@ -446,18 +482,17 @@ export function registerChatFeature(app: App, cfg: Config) {
         hist = [];
         channelHistory.set(ev.channel, hist);
       }
-
-      // Append current user message (clip input length)
+ 
+      // Append current user message (deduped)
       const userMsg: ChatEntry = {
         role: 'user',
         text: clipInput(afterBotTrim, cfg.chatInputMaxChars),
         ts: String(ev.ts || ''),
       };
-      hist.push(userMsg);
-
-      // Prune by configured caps
-      pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
-
+      pushHistory(ev.channel, userMsg);
+      // Refresh local reference (pushHistory may have pruned or deduped)
+      hist = channelHistory.get(ev.channel) || hist;
+ 
       // Build transcript string
       const transcript = buildTranscript(hist, cfg.chatHistoryMaxChars);
 
@@ -487,9 +522,7 @@ export function registerChatFeature(app: App, cfg: Config) {
       if (replyThreadTs) post.thread_ts = replyThreadTs;
       await client.chat.postMessage(post);
 
-      // Append assistant message and prune again
-      hist.push({ role: 'assistant', text: reply, ts: String(Date.now()) });
-      pruneHistoryInPlace(hist, cfg.chatHistoryMaxTurns, cfg.chatHistoryMaxChars);
+      // Do not manually append assistant reply; passive message listener will capture the posted message event.
     } catch (err) {
       logger?.error?.(err);
     }
