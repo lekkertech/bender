@@ -61,9 +61,7 @@ async function main() {
       text: ev.text,
       team: (body as any)?.team_id,
     };
-    if (cfg.logLevel === 'debug') {
-      console.debug('Incoming Slack event:', summary);
-    }
+    logger?.debug?.(summary, 'incoming Slack event');
     await next?.();
   });
 

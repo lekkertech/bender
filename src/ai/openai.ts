@@ -1,10 +1,19 @@
 import OpenAI from 'openai';
 
+export type LoggerLike = {
+  debug?: (obj?: any, msg?: string) => void;
+  info?: (obj?: any, msg?: string) => void;
+  error?: (obj?: any, msg?: string) => void;
+};
+
 export type ChatOpts = {
   temperature?: number;
   maxTokens?: number;
   systemPrompt?: string;
   abortSignal?: AbortSignal;
+  logger?: LoggerLike;
+  previousResponseId?: string;
+  store?: boolean;
 };
 
 export class OpenAIClient {
@@ -20,7 +29,7 @@ export class OpenAIClient {
     return !!this.client;
   }
 
-  async chat(prompt: string, opts: ChatOpts = {}): Promise<string> {
+  async chat(prompt: string, opts: ChatOpts = {}): Promise<{ text: string; id: string }> {
     if (!this.client) throw new Error('OpenAI not configured (missing OPENAI_API_KEY)');
 
     const system = opts.systemPrompt ?? 'You are a helpful Slack bot. Keep replies concise and suitable for Slack.';
@@ -31,10 +40,19 @@ export class OpenAIClient {
 
     try {
       // Single attempt using Responses API (no retries, no alternate parsing)
+      const inputArr: any[] = [];
+      if (system) inputArr.push({ role: 'system', content: system });
+      inputArr.push({ role: 'user', content: prompt });
+
       const req: any = {
         model: this.model,
-        input: `${system}\n\n${prompt}`,
+        input: inputArr,
       };
+
+      if (opts.previousResponseId) {
+        req.previous_response_id = opts.previousResponseId;
+      }
+
       // Only non-gpt-5 models support max_output_tokens; omit for gpt-5 family
       if (!/^gpt-5/i.test(this.model)) {
         req.max_output_tokens = maxTokens;
@@ -46,22 +64,22 @@ export class OpenAIClient {
         req.temperature = temperature;
       }
 
+      // Persist so previous_response_id chains have retrievable state
+      req.store = opts.store ?? true;
+
       const resp = await this.client.responses.create(req, { signal: opts.abortSignal });
 
-      if (process.env.LOG_LEVEL === 'debug') {
-        const took = Date.now() - start;
-        console.debug('OpenAI Responses call', {
-          model: this.model,
-          took_ms: took,
-          usage: (resp as any)?.usage,
-        });
-      }
+      const took = Date.now() - start;
+      opts.logger?.debug?.(
+        { model: this.model, took_ms: took, usage: (resp as any)?.usage },
+        'openai: responses call'
+      );
 
       const txt = (resp as any)?.output_text?.trim();
       if (!txt) {
         throw new Error('OpenAI returned empty response');
       }
-      return txt;
+      return { text: txt, id: (resp as any)?.id };
     } catch (err) {
       // Log standard OpenAI error shape if present and rethrow
       try {
@@ -75,10 +93,14 @@ export class OpenAIClient {
           param: e?.error?.param ?? e?.param,
           message: e?.error?.message ?? e?.message,
         };
-        if (process.env.LOG_LEVEL === 'debug') {
-          details.raw = e?.error || e;
+        // Emit raw error details at debug level if logger provided
+        opts.logger?.debug?.({ raw: e?.error || e }, 'openai: error raw');
+        // Emit structured error
+        if (opts.logger?.error) {
+          opts.logger.error(details, 'OpenAI API error');
+        } else {
+          console.error('OpenAI API error', details);
         }
-        console.error('OpenAI API error', details);
       } catch {}
       throw err instanceof Error ? err : new Error(String(err));
     }
