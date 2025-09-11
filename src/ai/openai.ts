@@ -16,6 +16,22 @@ export type ChatOpts = {
   store?: boolean;
 };
 
+/**
+ * Chat Completions message item (system/user/assistant)
+ */
+export type ChatMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
+
+export type ChatCompletionOpts = {
+  temperature?: number;
+  maxCompletionTokens?: number;
+  promptCacheKey?: string;
+  abortSignal?: AbortSignal;
+  logger?: LoggerLike;
+};
+
 export class OpenAIClient {
   private client: OpenAI | null;
   private model: string;
@@ -29,6 +45,10 @@ export class OpenAIClient {
     return !!this.client;
   }
 
+  /**
+   * Legacy Responses API wrapper (kept for compatibility with any remaining callers).
+   * Prefer chatCompletion() with an explicit messages array.
+   */
   async chat(prompt: string, opts: ChatOpts = {}): Promise<{ text: string; id: string }> {
     if (!this.client) throw new Error('OpenAI not configured (missing OPENAI_API_KEY)');
 
@@ -60,13 +80,17 @@ export class OpenAIClient {
       // Disable reasoning for gpt-5 family; omit temperature for gpt-5
       if (/^gpt-5/i.test(this.model)) {
         req.reasoning = { effort: 'minimal' };
+        req.text = { verbosity: 'low' };
       } else if (opts.temperature !== undefined) {
         req.temperature = temperature;
       }
 
       // Persist so previous_response_id chains have retrievable state
       req.store = opts.store ?? true;
-
+      opts.logger?.debug?.(
+        { request: JSON.stringify(req) },
+        'openai: request call'
+      );
       const resp = await this.client.responses.create(req, { signal: opts.abortSignal });
 
       const took = Date.now() - start;
@@ -100,6 +124,71 @@ export class OpenAIClient {
           opts.logger.error(details, 'OpenAI API error');
         } else {
           console.error('OpenAI API error', details);
+        }
+      } catch {}
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /**
+   * Preferred Chat Completions API wrapper.
+   * Send an explicit messages array (system + prior user/assistant turns + current user turn).
+   */
+  async chatCompletion(messages: ChatMessage[], opts: ChatCompletionOpts = {}): Promise<string> {
+    if (!this.client) throw new Error('OpenAI not configured (missing OPENAI_API_KEY)');
+
+    const start = Date.now();
+
+    try {
+      const req: any = {
+        model: this.model,
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      };
+
+      // Temperature: gpt-5 family may ignore/limit temperature; still pass when provided for non-gpt-5.
+      if (opts.temperature !== undefined && !/^gpt-5/i.test(this.model)) {
+        req.temperature = opts.temperature;
+      }
+
+      // Newer chat completions parameter name
+      if (opts.maxCompletionTokens != null) {
+        req.max_completion_tokens = opts.maxCompletionTokens;
+      }
+
+      // Optional server-side prompt caching key
+      if (opts.promptCacheKey) {
+        req.prompt_cache_key = opts.promptCacheKey;
+      }
+
+      const resp = await this.client.chat.completions.create(req, { signal: opts.abortSignal });
+
+      const took = Date.now() - start;
+      opts.logger?.debug?.(
+        { model: this.model, took_ms: took, usage: (resp as any)?.usage },
+        'openai: chat.completions call'
+      );
+
+      const txt = resp.choices?.[0]?.message?.content?.trim() ?? '';
+      if (!txt) {
+        throw new Error('OpenAI returned empty response');
+      }
+      return txt;
+    } catch (err) {
+      try {
+        const e: any = err;
+        const details: any = {
+          model: this.model,
+          status: e?.status ?? e?.response?.status,
+          requestID: e?.requestID ?? e?.response?.headers?.get?.('x-request-id'),
+          code: e?.error?.code ?? e?.code,
+          type: e?.error?.type ?? e?.type,
+          param: e?.error?.param ?? e?.param,
+          message: e?.error?.message ?? e?.message,
+        };
+        if (opts.logger?.error) {
+          opts.logger.error(details, 'OpenAI ChatCompletions API error');
+        } else {
+          console.error('OpenAI ChatCompletions API error', details);
         }
       } catch {}
       throw err instanceof Error ? err : new Error(String(err));

@@ -12,11 +12,6 @@ import {
   listChannelSummaries,
   clearAllHistory,
   clearChannelHistory,
-  conversationKey,
-  getPrevResponseId,
-  setPrevResponseId,
-  clearAllPrevResponseIds,
-  clearPrevResponseIdsForChannel,
 } from './state.js';
 import { updateDefaultPromptOnDisk, loadChatConfig } from './config.js';
 import { OpenAIClient } from '../../ai/openai.js';
@@ -56,7 +51,6 @@ export function createChatHandlers(deps: Deps) {
 
     if (clearAllMatch) {
       const { channels, totalEntries } = clearAllHistory();
-      clearAllPrevResponseIds();
       logger?.debug?.({ userId: ev.user, channels, totalEntries }, 'chat: cleared all channel contexts');
       try {
         await client.chat.postEphemeral({
@@ -68,7 +62,6 @@ export function createChatHandlers(deps: Deps) {
       return true;
     } else {
       const entries = clearChannelHistory(ev.channel);
-      clearPrevResponseIdsForChannel(ev.channel);
       logger?.debug?.({ userId: ev.user, channel: ev.channel, entries }, 'chat: cleared channel context');
       try {
         await client.chat.postEphemeral({
@@ -280,19 +273,24 @@ export function createChatHandlers(deps: Deps) {
       'chat: invoking OpenAI'
     );
 
-    // Chain using OpenAI conversation state
-    const convKey = conversationKey(ev.channel, replyThreadTs);
-    const prevId = getPrevResponseId(convKey);
+    // Build messages from captured channel history (system + prior turns + current turn)
     const defaults = getDefaultChat();
-    const { text: outText, id: respId } = await ai.chat(afterBotTrim, {
+    const systemPrompt = defaults?.systemPrompt ?? cfg.chatSystemPrompt;
+    const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
+    if (systemPrompt && systemPrompt.trim()) {
+      messages.push({ role: 'system', content: systemPrompt.trim() });
+    }
+    for (const e of hist) {
+      const role = e.role === 'assistant' ? 'assistant' : 'user';
+      messages.push({ role, content: e.text });
+    }
+    const promptCacheKey = `chat:${ev.channel}${replyThreadTs ? '#' + replyThreadTs : ''}`;
+    const outText = await ai.chatCompletion(messages, {
       temperature: defaults?.temperature ?? cfg.chatTemperature,
-      maxTokens: defaults?.maxTokens ?? cfg.chatReplyMaxTokens,
-      systemPrompt: defaults?.systemPrompt ?? cfg.chatSystemPrompt,
+      maxCompletionTokens: defaults?.maxTokens ?? cfg.chatReplyMaxTokens,
+      promptCacheKey,
       logger,
-      previousResponseId: prevId,
-      store: true,
     });
-    if (respId) setPrevResponseId(convKey, respId);
 
     const post: any = { channel: ev.channel, text: outText };
     if (replyThreadTs) post.thread_ts = replyThreadTs;

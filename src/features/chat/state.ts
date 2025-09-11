@@ -3,18 +3,12 @@ import type { Config } from '../../env.js';
 import { clipInput, pruneHistoryInPlace } from './helpers.js';
 
 /**
- * In-memory state for chat history and OpenAI response chaining.
+ * In-memory state for chat history (channel-scoped).
  * Lost on process restart.
  */
 
 // Channel-scoped transcript history (top-level channel messages only; exclude threads)
 const channelHistory = new Map<string, ChatEntry[]>();
-
-// Conversation chaining map (OpenAI previous_response_id), scoped by channel or thread key
-// Key format:
-//   - Channel mode: "{channelId}"
-//   - Thread mode:  "{channelId}#{thread_ts}"
-const prevResponseIds = new Map<string, string>();
 
 export function getChannelHistory(channelId: string): ChatEntry[] {
   let hist = channelHistory.get(channelId);
@@ -56,37 +50,6 @@ export function listChannelSummaries(): Array<{ channelId: string; entries: numb
     out.push({ channelId: cid, entries: arr.length });
   }
   return out;
-}
-
-/**
- * Conversation key helper for OpenAI previous_response_id
- */
-export function conversationKey(channelId: string, threadTs?: string | undefined): string {
-  return threadTs ? `${channelId}#${threadTs}` : channelId;
-}
-
-export function getPrevResponseId(key: string): string | undefined {
-  return prevResponseIds.get(key);
-}
-
-export function setPrevResponseId(key: string, id: string | undefined): void {
-  if (!id) return;
-  prevResponseIds.set(key, id);
-}
-
-export function clearAllPrevResponseIds(): void {
-  prevResponseIds.clear();
-}
-
-export function clearPrevResponseIdsForChannel(channelId: string): void {
-  // Remove both the channel-only key and any thread keys that start with "channelId#"
-  prevResponseIds.delete(channelId);
-  const prefix = `${channelId}#`;
-  for (const k of Array.from(prevResponseIds.keys())) {
-    if (k.startsWith(prefix)) {
-      prevResponseIds.delete(k);
-    }
-  }
 }
 
 export { channelHistory };
