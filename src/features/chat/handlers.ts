@@ -294,7 +294,14 @@ export function createChatHandlers(deps: Deps) {
 
     const post: any = { channel: ev.channel, text: outText };
     if (replyThreadTs) post.thread_ts = replyThreadTs;
-    await client.chat.postMessage(post);
+    const sent = await client.chat.postMessage(post);
+    // Record assistant message in history (capture even if posted in a thread)
+    pushStateHistory(cfg, ev.channel, {
+      role: 'assistant',
+      text: outText,
+      ts: String((sent as any)?.ts || Date.now()),
+      author: 'Assistant',
+    });
   };
 
   return {
