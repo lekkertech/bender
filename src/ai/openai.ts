@@ -150,6 +150,10 @@ export class OpenAIClient {
         req.temperature = opts.temperature;
       }
 
+      if (/^gpt-5/i.test(this.model)){
+        req.reasoning_effort = 'minimal';
+      }
+
       // Newer chat completions parameter name
       if (opts.maxCompletionTokens != null) {
         req.max_completion_tokens = opts.maxCompletionTokens;
@@ -159,12 +163,15 @@ export class OpenAIClient {
       if (opts.promptCacheKey) {
         req.prompt_cache_key = opts.promptCacheKey;
       }
-
+      opts.logger?.debug?.(
+        { req: JSON.stringify(req) },
+        'openai: request'
+      );
       const resp = await this.client.chat.completions.create(req, { signal: opts.abortSignal });
 
       const took = Date.now() - start;
       opts.logger?.debug?.(
-        { model: this.model, took_ms: took, usage: (resp as any)?.usage },
+        { resp: JSON.stringify(resp) },
         'openai: chat.completions call'
       );
 
