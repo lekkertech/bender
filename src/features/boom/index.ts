@@ -47,12 +47,30 @@ export function registerBoomFeature(app: App, cfg: Config) {
       // Timestamp handling
       const tsStr = String(m.ts || '0');
       const tsSeconds = Math.floor(Number(tsStr.split('.')[0] || '0'));
-      const { date, weekday, isWorkday } = localDayInfo(tsSeconds);
+      const { date, weekday, isWorkday, isHoliday } = localDayInfo(tsSeconds);
       const inWindow = inNoonWindow(tsSeconds);
       const neededGames: Game[] = weekday === 3 ? ['boom', 'hadeda', 'wednesday'] : ['boom', 'hadeda'];
 
-      // If a game emoji is posted outside the window, or the competition is already closed (podiums decided), add a clown reaction
+      // If a game emoji is posted outside the window, add a clown reaction.
+      // (Do this before any store reads/writes so we never mutate state on non-workdays.)
       const anyEmoji = detectAnyGameEmoji(m.text || '');
+      if (anyEmoji && !inWindow) {
+        try {
+          await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: 'clown_face' });
+        } catch {}
+        return;
+      }
+
+      // Boom Game is only played on workdays; on weekends/holidays, explicitly tell users.
+      if (!isWorkday) {
+        if (anyEmoji && inWindow) {
+          const reason = isHoliday ? "it's a holiday" : 'it\'s the weekend';
+          await client.chat.postMessage({ channel: m.channel, text: `Boom isn't played today — ${reason}.` });
+        }
+        return;
+      }
+
+      // If a game emoji is posted outside the window, or the competition is already closed (podiums decided), add a clown reaction
       const gameClosed = anyEmoji ? (db.placementsCount(date, anyEmoji) >= 3) : false;
       const dayClosed = neededGames.every((g) => db.placementsCount(date, g) >= 3);
       if (anyEmoji && (!inWindow || gameClosed || dayClosed)) {
@@ -61,8 +79,6 @@ export function registerBoomFeature(app: App, cfg: Config) {
         } catch {}
         return;
       }
-
-      if (!isWorkday) return;
       if (!inWindow) return;
 
       // Determine game by exact single-emoji message

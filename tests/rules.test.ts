@@ -62,6 +62,12 @@ describe('rules.ts basics', () => {
     expect(mon.weekday).toBe(1);
     expect(mon.isWorkday).toBe(true);
     expect(mon.date).toBe('2025-03-03');
+
+    // 2025-03-21 is a South African public holiday (Human Rights Day)
+    const holiday = localDayInfo(toSec('2025-03-21T12:00:00'));
+    expect(holiday.weekday).toBe(5);
+    expect(holiday.isHoliday).toBe(true);
+    expect(holiday.isWorkday).toBe(false);
   });
 
   it('week key/start/end and friday detection', () => {

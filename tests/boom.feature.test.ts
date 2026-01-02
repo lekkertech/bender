@@ -94,7 +94,7 @@ function setupFakeApp() {
   };
 }
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -114,6 +114,40 @@ afterEach(() => {
 });
 
 describe('Boom feature integration-like behavior', () => {
+  it("does not award points on holidays and tells the user the game isn't played", async () => {
+    const t = setupFakeApp();
+
+    // Seed a holiday file for the temp CWD, using JSONC-style comments to exercise robust parsing.
+    const holidaysDir = join(process.cwd(), 'data', 'holidays');
+    mkdirSync(holidaysDir, { recursive: true });
+    writeFileSync(
+      join(holidaysDir, 'za-2025.json'),
+      '[\n  "2025-03-21", // Human Rights Day\n]\n',
+      'utf8',
+    );
+
+    await t.triggerMessage({
+      text: ':boom:',
+      user: 'U1',
+      channel: 'C1',
+      ts: toTs('2025-03-21T12:00:05'),
+    });
+
+    // No reactions (no points, no podium, no clowning in-window)
+    expect(t.calls.reactionsAddCalls.length).toBe(0);
+
+    // Explicit message to user
+    expect(t.calls.chatPostCalls.length).toBe(1);
+    expect(String(t.calls.chatPostCalls[0].text)).toContain("Boom isn't played today");
+    expect(String(t.calls.chatPostCalls[0].text)).toContain('holiday');
+
+    // No store updates for that date
+    const raw = JSON.parse(readFileSync(join(process.cwd(), 'data', 'store.json'), 'utf8')) as any;
+    expect(raw.counts?.['2025-03-21']).toBeUndefined();
+    expect(raw.placements?.['2025-03-21']).toBeUndefined();
+    expect(raw.messages?.['2025-03-21']).toBeUndefined();
+  });
+
   it('adds clown reaction when game emoji posted outside noon window', async () => {
     const t = setupFakeApp();
     await t.triggerMessage({

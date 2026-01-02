@@ -60,26 +60,105 @@ export function detectAnyGameEmoji(text: string): Game | null {
 }
 
 // Load holiday dates for ZA from seeded JSON by year, fallback to env HOLIDAYS list
-const holidayCache = new Map<string, Set<string>>(); // year -> set of YYYY-MM-DD
+// Note: cache key includes process.cwd() because holiday seed files are loaded relative to CWD
+// and tests may change it.
+const holidayCache = new Map<string, Set<string>>(); // "<cwd>::<year>" -> set of YYYY-MM-DD
+
+function stripJsonc(input: string): string {
+  // Remove // line comments and /* */ block comments while preserving string literals.
+  let out = '';
+  let i = 0;
+  let inString = false;
+  let stringQuote: '"' | "'" | null = null;
+  let escaped = false;
+
+  while (i < input.length) {
+    const ch = input[i] || '';
+    const next = input[i + 1] || '';
+
+    if (inString) {
+      out += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (stringQuote && ch === stringQuote) {
+        inString = false;
+        stringQuote = null;
+      }
+      i++;
+      continue;
+    }
+
+    // Line comment
+    if (ch === '/' && next === '/') {
+      i += 2;
+      while (i < input.length && input[i] !== '\n') i++;
+      continue;
+    }
+
+    // Block comment
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < input.length) {
+        if (input[i] === '*' && input[i + 1] === '/') {
+          i += 2;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      stringQuote = ch as any;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    out += ch;
+    i++;
+  }
+
+  // JSONC often allows trailing commas; remove a simple set of cases.
+  out = out.replace(/,\s*(\]|\})/g, '$1');
+  return out;
+}
 
 function loadYearHolidays(year: number): Set<string> {
-  const key = String(year);
+  const yearKey = String(year);
+  const key = `${process.cwd()}::${yearKey}`;
   if (holidayCache.has(key)) return holidayCache.get(key)!;
   const set = new Set<string>();
   try {
     const fp = join(process.cwd(), 'data', 'holidays', `za-${year}.json`);
     if (existsSync(fp)) {
-      const data = JSON.parse(readFileSync(fp, 'utf8')) as string[];
-      data.forEach((d) => set.add(d));
+      const raw = readFileSync(fp, 'utf8');
+      const cleaned = stripJsonc(raw);
+      const parsed = JSON.parse(cleaned) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const v of parsed) {
+          if (typeof v !== 'string') continue;
+          const d = v.trim();
+          if (/^\d{4}-\d{2}-\d{2}$/.test(d)) set.add(d);
+        }
+      } else {
+        console.warn(`[boom] holidays file is not an array: ${fp}`);
+      }
     }
-  } catch {}
+  } catch (err) {
+    // Avoid silently disabling holiday detection.
+    console.warn('[boom] failed to load holidays:', { year, err });
+  }
   // Append any custom env holidays
   const extra = (process.env.HOLIDAYS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
   for (const d of extra) {
-    if (d.startsWith(key + '-')) set.add(d);
+    if (d.startsWith(yearKey + '-')) set.add(d);
   }
   holidayCache.set(key, set);
   return set;
