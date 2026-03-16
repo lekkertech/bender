@@ -1,5 +1,6 @@
 import type { Config } from '../../env.js';
 import { shouldBypassRateLimit, isWorkspaceAdmin } from '../../util/admin.js';
+import { getDisplayName } from '../../util/slack.js';
 import type { ChatDefaultConfig, ChatEntry } from './types.js';
 import {
   stripLeadingBotMention,
@@ -30,6 +31,19 @@ type Deps = {
 export function createChatHandlers(deps: Deps) {
   const { cfg, chatCfgPath, getDefaultChat, setDefaultChat, ai, userLimiter, channelLimiter } = deps;
 
+  async function guardAdmin(ev: any, client: any, action: string): Promise<boolean> {
+    const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
+    if (isAdmin) return true;
+    try {
+      await client.chat.postEphemeral({
+        channel: ev.channel,
+        user: ev.user,
+        text: `Only workspace admins or users in ADMIN_USER_IDS may ${action}.`,
+      });
+    } catch {}
+    return false;
+  }
+
   const handleClearContext = async (ev: any, client: any, logger: any): Promise<boolean> => {
     const rawText = String(ev.text || '');
     const afterBotTrimEarly = stripLeadingBotMention(rawText).trim();
@@ -37,17 +51,7 @@ export function createChatHandlers(deps: Deps) {
     const clearOneMatch = clearAllMatch ? null : afterBotTrimEarly.match(/^clear\s+(chat|context)\s*$/i);
     if (!clearAllMatch && !clearOneMatch) return false;
 
-    const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
-    if (!isAdmin) {
-      try {
-        await client.chat.postEphemeral({
-          channel: ev.channel,
-          user: ev.user,
-          text: 'Only workspace admins or users in ADMIN_USER_IDS may clear chat context.',
-        });
-      } catch {}
-      return true;
-    }
+    if (!(await guardAdmin(ev, client, 'clear chat context'))) return true;
 
     if (clearAllMatch) {
       const { channels, totalEntries } = clearAllHistory();
@@ -80,17 +84,7 @@ export function createChatHandlers(deps: Deps) {
     const showContext = /^context$/i.test(afterBotTrimEarly);
     if (!showContext) return false;
 
-    const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
-    if (!isAdmin) {
-      try {
-        await client.chat.postEphemeral({
-          channel: ev.channel,
-          user: ev.user,
-          text: 'Only workspace admins or users in ADMIN_USER_IDS may view chat context.',
-        });
-      } catch {}
-      return true;
-    }
+    if (!(await guardAdmin(ev, client, 'view chat context'))) return true;
 
     const lines: string[] = [];
     const chId = String(ev.channel || '');
@@ -168,17 +162,8 @@ export function createChatHandlers(deps: Deps) {
     const updateDefaultMatch = afterBotTrim.match(/^set\s+prompt\s+([\s\S]+)$/i);
     if (!updateDefaultMatch) return false;
 
-    const isAdmin = await isWorkspaceAdmin(client as any, ev.user);
-    if (!isAdmin) {
-      try {
-        await client.chat.postEphemeral({
-          channel: ev.channel,
-          user: ev.user,
-          text: 'Only workspace admins or users in ADMIN_USER_IDS may update the prompt.',
-        });
-      } catch {}
-      return true;
-    }
+    if (!(await guardAdmin(ev, client, 'update the prompt'))) return true;
+
     if (!chatCfgPath) {
       try {
         await client.chat.postEphemeral({
@@ -193,13 +178,8 @@ export function createChatHandlers(deps: Deps) {
     const newPrompt = updateDefaultMatch[1].trim();
     let setterName: string | undefined;
     try {
-      const info: any = await (client as any)?.users?.info?.({ user: ev.user });
-      const user = info?.user;
-      const profile = user?.profile || {};
-      setterName =
-        (profile.display_name && String(profile.display_name).trim()) ||
-        (profile.real_name && String(profile.real_name).trim()) ||
-        (user?.name ? String(user.name) : undefined);
+      const name = await getDisplayName(client, ev.user);
+      setterName = name !== ev.user ? name : undefined;
     } catch {}
 
     try {

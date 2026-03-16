@@ -4,6 +4,23 @@ import { join } from 'node:path';
 
 export type Game = 'boom' | 'hadeda' | 'wednesday';
 
+/** Podium points awarded to 1st, 2nd, 3rd place. */
+export const PODIUM_WEIGHTS = [3, 2, 1] as const;
+
+/** Slack reaction name for each game (used for reactions.add). */
+export const GAME_REACTION: Record<Game, string> = {
+  boom: 'boom',
+  hadeda: 'hadeda-boom',
+  wednesday: 'wednesday-boom',
+};
+
+/** Colon-wrapped emoji string for each game (used in message text). */
+export const GAME_EMOJI: Record<Game, string> = {
+  boom: ':boom:',
+  hadeda: ':hadeda-boom:',
+  wednesday: ':wednesday-boom:',
+};
+
 export type DayInfo = {
   date: string; // YYYY-MM-DD (local tz)
   weekday: number; // 1=Mon .. 7=Sun (ISO)
@@ -31,17 +48,14 @@ export function inNoonWindow(tsSeconds: number): boolean {
 }
 
 export function detectGameFromMessage(text: string, weekday: number): Game | null {
-  // Trim and normalize
   const t = (text || '').trim();
   if (!t) return null;
 
-  // Enforce single-emoji messages: exact match for these tokens
   const isOnly = (s: string) => t === s;
 
-  // :boom: may render as unicode 💥 in text; accept either
-  const isBoom = isOnly(':boom:') || isOnly('💥');
-  const isHadeda = isOnly(':hadeda-boom:'); // custom emoji
-  const isWed = isOnly(':wednesday-boom:'); // custom emoji
+  const isBoom = isOnly(GAME_EMOJI.boom) || isOnly('💥');
+  const isHadeda = isOnly(GAME_EMOJI.hadeda);
+  const isWed = isOnly(GAME_EMOJI.wednesday);
 
   if (isBoom) return 'boom';
   if (isHadeda) return 'hadeda';
@@ -53,9 +67,9 @@ export function detectGameFromMessage(text: string, weekday: number): Game | nul
 export function detectAnyGameEmoji(text: string): Game | null {
   const t = (text || '').trim();
   if (!t) return null;
-  if (t === ':boom:' || t === '💥') return 'boom';
-  if (t === ':hadeda-boom:') return 'hadeda';
-  if (t === ':wednesday-boom:') return 'wednesday';
+  if (t === GAME_EMOJI.boom || t === '💥') return 'boom';
+  if (t === GAME_EMOJI.hadeda) return 'hadeda';
+  if (t === GAME_EMOJI.wednesday) return 'wednesday';
   return null;
 }
 

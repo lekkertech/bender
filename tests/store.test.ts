@@ -68,7 +68,7 @@ describe('Store', () => {
       db.addPlacement(d1, 'hadeda', 'U2'); // +3
       db.addPlacement(d1, 'hadeda', 'U3'); // +2
       db.addPlacement(d1, 'hadeda', 'U4'); // +1
-      // Tuesday placements
+      // Wednesday placements
       db.addPlacement(d2, 'wednesday', 'U1'); // +3
       db.addPlacement(d2, 'wednesday', 'U4'); // +2
       db.addPlacement(d2, 'wednesday', 'U5'); // +1
