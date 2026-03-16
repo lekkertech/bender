@@ -328,7 +328,7 @@ export class Store {
       for (const g of ['boom', 'hadeda', 'wednesday'] as Game[]) {
         const podium = this.computePodium(date, g);
         if (!podium.length) continue;
-        const weights = [5, 3, 1];
+        const weights = [3, 2, 1];
         podium.forEach((uid, idx) => {
           const pts = weights[idx] || 0;
           if (pts > 0) res.set(uid, (res.get(uid) || 0) + pts);

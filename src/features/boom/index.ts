@@ -104,7 +104,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       if (ready && !db.hasDailyAnnounced(date)) {
         const lines: string[] = [];
         lines.push(`Boom Game — Daily Podium (${date})`);
-        const weights = [5, 3, 1];
+        const weights = [3, 2, 1];
         for (const g of neededGames) {
           const arr = db.getPlacements(date, g);
           if (!arr.length) {
