@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DateTime } from 'luxon';
-import type { Game } from './rules.js';
+import { PODIUM_WEIGHTS, type Game } from './rules.js';
 
 type Winner = { user_id: string; channel_id: string; message_ts: string; created_at: string };
 
@@ -328,7 +328,7 @@ export class Store {
       for (const g of ['boom', 'hadeda', 'wednesday'] as Game[]) {
         const podium = this.computePodium(date, g);
         if (!podium.length) continue;
-        const weights = [5, 3, 1];
+        const weights = PODIUM_WEIGHTS;
         podium.forEach((uid, idx) => {
           const pts = weights[idx] || 0;
           if (pts > 0) res.set(uid, (res.get(uid) || 0) + pts);

@@ -56,30 +56,30 @@ describe('Store', () => {
       expect(db.hasCrowned(wk)).toBe(true);
     }));
 
-  it('weeklyTotals computes 5-3-1 across days in week', () =>
+  it('weeklyTotals computes 3-2-1 across days in week', () =>
     withStore((db) => {
       // Two dates in the same ISO week (Mon-Fri)
       const d1 = '2025-03-03'; // Mon
       const d2 = '2025-03-04'; // Tue
       // Monday placements
-      db.addPlacement(d1, 'boom', 'U1'); // +5
-      db.addPlacement(d1, 'boom', 'U2'); // +3
+      db.addPlacement(d1, 'boom', 'U1'); // +3
+      db.addPlacement(d1, 'boom', 'U2'); // +2
       db.addPlacement(d1, 'boom', 'U3'); // +1
-      db.addPlacement(d1, 'hadeda', 'U2'); // +5
-      db.addPlacement(d1, 'hadeda', 'U3'); // +3
+      db.addPlacement(d1, 'hadeda', 'U2'); // +3
+      db.addPlacement(d1, 'hadeda', 'U3'); // +2
       db.addPlacement(d1, 'hadeda', 'U4'); // +1
-      // Tuesday placements
-      db.addPlacement(d2, 'wednesday', 'U1'); // +5
-      db.addPlacement(d2, 'wednesday', 'U4'); // +3
+      // Wednesday placements
+      db.addPlacement(d2, 'wednesday', 'U1'); // +3
+      db.addPlacement(d2, 'wednesday', 'U4'); // +2
       db.addPlacement(d2, 'wednesday', 'U5'); // +1
 
       const totals = db.weeklyTotals('2025-03-03', '2025-03-07');
       const map = new Map(totals.map((r) => [r.user_id, r.points]));
-      expect(map.get('U1')).toBe(10); // 5 (Mon boom 1st) + 5 (Tue wed 1st)
-      expect(map.get('U2')).toBe(8);  // 3 (Mon boom 2nd) + 5 (Mon hadeda 1st)
-      expect(map.get('U3')).toBe(4);  // 1 (Mon boom 3rd) + 3 (Mon hadeda 2nd)
-      expect(map.get('U4')).toBe(4);  // 1 (Mon hadeda 3rd) + 3 (Tue wed 2nd)
-      expect(map.get('U5')).toBe(1);  // 1 (Tue wed 3rd)
+      expect(map.get('U1')).toBe(6); // 3 (Mon boom 1st) + 3 (Tue wed 1st)
+      expect(map.get('U2')).toBe(5); // 2 (Mon boom 2nd) + 3 (Mon hadeda 1st)
+      expect(map.get('U3')).toBe(3); // 1 (Mon boom 3rd) + 2 (Mon hadeda 2nd)
+      expect(map.get('U4')).toBe(3); // 1 (Mon hadeda 3rd) + 2 (Tue wed 2nd)
+      expect(map.get('U5')).toBe(1); // 1 (Tue wed 3rd)
     }));
 
   it('crown persistence stores latest crown and getLatestCrown returns the newest', () =>
@@ -105,10 +105,10 @@ describe('Store', () => {
       // Podium should be ordered by ts (earliest first)
       expect(db.getPlacements(d, 'boom')).toEqual(['U2', 'U1']);
 
-      // Weekly totals should award 5 to U2 (1st) and 3 to U1 (2nd)
+      // Weekly totals should award 3 to U2 (1st) and 2 to U1 (2nd)
       const totals = db.weeklyTotals('2025-03-03', '2025-03-07');
       const map = new Map(totals.map((r) => [r.user_id, r.points]));
-      expect(map.get('U2')).toBe(5);
-      expect(map.get('U1')).toBe(3);
+      expect(map.get('U2')).toBe(3);
+      expect(map.get('U1')).toBe(2);
     }));
 });

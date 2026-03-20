@@ -1,5 +1,6 @@
 import type { App } from '@slack/bolt';
 import type { Config } from '../../env.js';
+import { getDisplayName, slackTsToSeconds } from '../../util/slack.js';
 import { Store } from './store.js';
 import {
   detectGameFromMessage,
@@ -9,29 +10,15 @@ import {
   isFriday,
   weekKeyFor,
   weekStartEnd,
+  PODIUM_WEIGHTS,
+  GAME_REACTION,
+  GAME_EMOJI,
   type Game,
 } from './rules.js';
 
 function inAllowedChannel(cfg: Config, channel?: string): boolean {
   if (!cfg.allowedChannels) return true;
   return channel ? cfg.allowedChannels.has(channel) : false;
-}
-
-const gameEmojiName: Record<Game, string> = {
-  boom: 'boom',
-  hadeda: 'hadeda-boom',
-  wednesday: 'wednesday-boom',
-};
-
-function emojiFor(g: Game): string {
-  switch (g) {
-    case 'boom':
-      return ':boom:';
-    case 'hadeda':
-      return ':hadeda-boom:';
-    case 'wednesday':
-      return ':wednesday-boom:';
-  }
 }
 
 export function registerBoomFeature(app: App, cfg: Config) {
@@ -46,7 +33,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
       // Timestamp handling
       const tsStr = String(m.ts || '0');
-      const tsSeconds = Math.floor(Number(tsStr.split('.')[0] || '0'));
+      const tsSeconds = slackTsToSeconds(tsStr);
       const { date, weekday, isWorkday, isHoliday } = localDayInfo(tsSeconds);
       const inWindow = inNoonWindow(tsSeconds);
       const neededGames: Game[] = weekday === 3 ? ['boom', 'hadeda', 'wednesday'] : ['boom', 'hadeda'];
@@ -94,7 +81,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       if (position === 1) {
         // Optional: react with the game emoji for first place
         try {
-          await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: gameEmojiName[game] });
+          await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: GAME_REACTION[game] });
         } catch {}
       }
 
@@ -104,15 +91,15 @@ export function registerBoomFeature(app: App, cfg: Config) {
       if (ready && !db.hasDailyAnnounced(date)) {
         const lines: string[] = [];
         lines.push(`Boom Game — Daily Podium (${date})`);
-        const weights = [5, 3, 1];
+        const weights = PODIUM_WEIGHTS;
         for (const g of neededGames) {
           const arr = db.getPlacements(date, g);
           if (!arr.length) {
-            lines.push(`• ${emojiFor(g)} — no podium yet`);
+            lines.push(`• ${GAME_EMOJI[g]} — no podium yet`);
             continue;
           }
           const podium = arr.slice(0, 3).map((u, i) => `${i + 1}) <@${u}> +${weights[i]}pt`);
-          lines.push(`• ${emojiFor(g)} ${podium.join('  ')}`);
+          lines.push(`• ${GAME_EMOJI[g]} ${podium.join('  ')}`);
         }
 
         // Leaderboard (Mon–Fri of this week up to current date)
@@ -154,7 +141,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
         }
       }
     } catch (err) {
-      console.error('boom feature handler error:', err);
+      logger?.error?.(err);
     }
   });
 
@@ -173,7 +160,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
       // Derive local date from event timestamp, then compute ISO-week Mon–Fri range
       const tsStr = String(ev.ts || '0');
-      const tsSeconds = Math.floor(Number(tsStr.split('.')[0] || '0'));
+      const tsSeconds = slackTsToSeconds(tsStr);
       const { date } = localDayInfo(tsSeconds);
       const { start, end } = weekStartEnd(date);
 
@@ -182,21 +169,11 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
       // Resolve Slack display names to avoid notifying users (no <@...> mentions)
       const nameCache = new Map<string, string>();
-      const getDisplayName = async (uid: string): Promise<string> => {
+      const getName = async (uid: string): Promise<string> => {
         if (nameCache.has(uid)) return nameCache.get(uid)!;
-        try {
-          const info = await client.users.info({ user: uid });
-          const user = (info as any)?.user;
-          const profile = user?.profile || {};
-          const name: string =
-            (profile.display_name && String(profile.display_name).trim()) ||
-            (profile.real_name && String(profile.real_name).trim()) ||
-            (user?.name ? String(user.name) : uid);
-          nameCache.set(uid, name);
-          return name;
-        } catch {
-          return uid;
-        }
+        const name = await getDisplayName(client, uid);
+        nameCache.set(uid, name);
+        return name;
       };
 
       // Fallback plain text for clients that don't render blocks
@@ -247,7 +224,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
         const lines: string[] = await Promise.all(
           top.map(async (row, idx) => {
             const rank = idx + 1;
-            const name = await getDisplayName(row.user_id);
+            const name = await getName(row.user_id);
             fallback.push(`${rank}. ${name} — ${row.points} pt${row.points === 1 ? '' : 's'}`);
             return `${posLabel(rank)} ${name} — *${row.points}* pt${row.points === 1 ? '' : 's'}`;
           }),
@@ -262,7 +239,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const crown = db.getLatestCrown();
       blocks.push({ type: 'divider' });
       if (crown && crown.winners.length) {
-        const kingNames = await Promise.all(crown.winners.map((u: string) => getDisplayName(u)));
+        const kingNames = await Promise.all(crown.winners.map((u: string) => getName(u)));
         const kingsText = `:crown: Current king${kingNames.length > 1 ? 's' : ''}: ${kingNames.join(', ')}`;
         fallback.push('');
         fallback.push(kingsText.replace(':crown: ', ''));
