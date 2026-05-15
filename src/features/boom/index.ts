@@ -11,10 +11,11 @@ import {
   weekKeyFor,
   weekStartEnd,
   PODIUM_WEIGHTS,
-  GAME_REACTION,
   GAME_EMOJI,
   type Game,
 } from './rules.js';
+
+const PODIUM_MEDALS = ['first_place_medal', 'second_place_medal', 'third_place_medal'] as const;
 
 function inAllowedChannel(cfg: Config, channel?: string): boolean {
   if (!cfg.allowedChannels) return true;
@@ -29,6 +30,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
     try {
       const m = message as any;
       if (!m || m.subtype || !m.user) return; // Ignore bot/system/edited messages
+      if (m.thread_ts && m.thread_ts !== m.ts) return; // Ignore thread replies; only top-level posts count
       if (!inAllowedChannel(cfg, m.channel)) return;
 
       // Timestamp handling
@@ -77,13 +79,9 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
       // Podium placements 1st/2nd/3rd (unique users). After 3, further posts are clowned above.
       // Pass Slack message timestamp so placements are decided by earliest ts, not arrival order.
-      const position = db.addPlacement(date, game, m.user, tsStr, m.channel);
-      if (position === 1) {
-        // Optional: react with the game emoji for first place
-        try {
-          await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: GAME_REACTION[game] });
-        } catch {}
-      }
+      // Position reactions (medals) are deferred to announce time so out-of-order WebSocket
+      // delivery cannot mis-tag the winners.
+      db.addPlacement(date, game, m.user, tsStr, m.channel);
 
       // Daily announcement trigger: thresholds
       const counts = db.getCounts(date);
@@ -93,13 +91,22 @@ export function registerBoomFeature(app: App, cfg: Config) {
         lines.push(`Boom Game — Daily Podium (${date})`);
         const weights = PODIUM_WEIGHTS;
         for (const g of neededGames) {
-          const arr = db.getPlacements(date, g);
-          if (!arr.length) {
+          const podiumMsgs = db.getPodiumMessages(date, g);
+          if (!podiumMsgs.length) {
             lines.push(`• ${GAME_EMOJI[g]} — no podium yet`);
             continue;
           }
-          const podium = arr.slice(0, 3).map((u, i) => `${i + 1}) <@${u}> +${weights[i]}pt`);
-          lines.push(`• ${GAME_EMOJI[g]} ${podium.join('  ')}`);
+          const podiumLine = podiumMsgs.map((pm, i) => `${i + 1}) <@${pm.user_id}> +${weights[i]}pt`);
+          lines.push(`• ${GAME_EMOJI[g]} ${podiumLine.join('  ')}`);
+          // Apply medal reactions to the actual 1st/2nd/3rd messages by ts (deferred to settle out-of-order delivery)
+          for (let i = 0; i < podiumMsgs.length; i++) {
+            const medal = PODIUM_MEDALS[i];
+            const pm = podiumMsgs[i];
+            if (!medal || !pm.channel_id || !pm.message_ts) continue;
+            try {
+              await client.reactions.add({ channel: pm.channel_id, timestamp: pm.message_ts, name: medal });
+            } catch {}
+          }
         }
 
         // Leaderboard (Mon–Fri of this week up to current date)

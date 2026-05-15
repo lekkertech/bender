@@ -7,13 +7,6 @@ export type Game = 'boom' | 'hadeda' | 'wednesday';
 /** Podium points awarded to 1st, 2nd, 3rd place. */
 export const PODIUM_WEIGHTS = [3, 2, 1] as const;
 
-/** Slack reaction name for each game (used for reactions.add). */
-export const GAME_REACTION: Record<Game, string> = {
-  boom: 'boom',
-  hadeda: 'hadeda-boom',
-  wednesday: 'wednesday-boom',
-};
-
 /** Colon-wrapped emoji string for each game (used in message text). */
 export const GAME_EMOJI: Record<Game, string> = {
   boom: ':boom:',

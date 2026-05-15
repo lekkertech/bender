@@ -10,6 +10,11 @@ function toTs(iso: string, zone = 'Africa/Johannesburg'): string {
   return `${sec}.000000`;
 }
 
+function toTsMicros(iso: string, micros: number, zone = 'Africa/Johannesburg'): string {
+  const sec = Math.floor(DateTime.fromISO(iso, { zone }).toSeconds());
+  return `${sec}.${String(micros).padStart(6, '0')}`;
+}
+
 function setupFakeApp() {
   let messageHandler: MessageHandler | null = null;
   const eventHandlers = new Map<string, EventHandler>();
@@ -73,9 +78,11 @@ function setupFakeApp() {
   // Register handlers under test
   registerBoomFeature(app, cfg);
 
-  async function triggerMessage({ text, user, channel, ts }: { text: string; user: string; channel: string; ts: string }) {
+  async function triggerMessage({ text, user, channel, ts, thread_ts }: { text: string; user: string; channel: string; ts: string; thread_ts?: string }) {
     if (!messageHandler) throw new Error('message handler not registered');
-    await messageHandler({ message: { type: 'message', text, user, channel, ts }, client, logger });
+    const message: any = { type: 'message', text, user, channel, ts };
+    if (thread_ts) message.thread_ts = thread_ts;
+    await messageHandler({ message, client, logger });
   }
 
   async function triggerEvent(name: string, event: any) {
@@ -165,7 +172,7 @@ describe('Boom feature integration-like behavior', () => {
     expect(t.calls.chatPostCalls.length).toBe(0);
   });
 
-  it('reacts with game emoji for first place during noon window', async () => {
+  it('defers all podium reactions until announce (no per-arrival reactions)', async () => {
     const t = setupFakeApp();
     await t.triggerMessage({
       text: ':boom:',
@@ -173,13 +180,8 @@ describe('Boom feature integration-like behavior', () => {
       channel: 'C1',
       ts: toTs('2025-03-03T12:00:05'),
     });
-    // First place adds reaction with the specific emoji name
-    expect(t.calls.reactionsAddCalls.length).toBe(1);
-    expect(t.calls.reactionsAddCalls[0]).toMatchObject({
-      channel: 'C1',
-      name: 'boom',
-    });
-    // No daily announcement yet
+    // No reactions added eagerly on arrival; medals are applied at announce time
+    expect(t.calls.reactionsAddCalls.length).toBe(0);
     expect(t.calls.chatPostCalls.length).toBe(0);
   });
 
@@ -222,6 +224,99 @@ describe('Boom feature integration-like behavior', () => {
     const crownText = crownCalls[0].text as string;
     expect(crownText).toContain('2025-03-03 to 2025-03-07');
     expect(crownText).toMatch(/Winner(s)?: .*<@U1>/);
+  });
+
+  it('announcement orders podium by message ts when WebSocket delivers out-of-order', async () => {
+    const t = setupFakeApp();
+    const day = '2025-03-03'; // Monday
+    // Delivery order: U1 (latest ts), U2 (earliest ts), U3 (middle ts)
+    // Expected podium by ts: U2, U3, U1
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTsMicros(`${day}T12:00:00`, 800000) });
+    await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTsMicros(`${day}T12:00:00`, 100000) });
+    await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: toTsMicros(`${day}T12:00:00`, 500000) });
+
+    // Hadeda podium (in-order) to trigger daily announcement
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U4', channel: 'C1', ts: toTsMicros(`${day}T12:00:01`, 0) });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U5', channel: 'C1', ts: toTsMicros(`${day}T12:00:02`, 0) });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U6', channel: 'C1', ts: toTsMicros(`${day}T12:00:03`, 0) });
+
+    const podium = t.calls.chatPostCalls.find((c) => typeof c.text === 'string' && c.text.includes('Daily Podium'));
+    expect(podium).toBeDefined();
+    const text = podium!.text as string;
+    expect(text).toMatch(/:boom: 1\) <@U2> \+3pt {2}2\) <@U3> \+2pt {2}3\) <@U1> \+1pt/);
+  });
+
+  it('announcement handles microsecond-close out-of-order delivery correctly', async () => {
+    const t = setupFakeApp();
+    const day = '2025-03-03';
+    // Two boom messages with ts differing by 1 microsecond, delivered in reverse order
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTsMicros(`${day}T12:00:00`, 255560) }); // later by 1us
+    await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTsMicros(`${day}T12:00:00`, 255559) }); // earlier
+    await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: toTsMicros(`${day}T12:00:01`, 0) });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: toTsMicros(`${day}T12:00:01`, 0) });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTsMicros(`${day}T12:00:02`, 0) });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: toTsMicros(`${day}T12:00:03`, 0) });
+
+    const podium = t.calls.chatPostCalls.find((c) => typeof c.text === 'string' && c.text.includes('Daily Podium'));
+    expect(podium).toBeDefined();
+    const text = podium!.text as string;
+    // U2 (ts ...255559) must beat U1 (ts ...255560) despite arriving second
+    expect(text).toMatch(/:boom: 1\) <@U2> \+3pt {2}2\) <@U1> \+2pt {2}3\) <@U3> \+1pt/);
+  });
+
+  it('applies gold/silver/bronze medals to the correct messages under out-of-order delivery', async () => {
+    const t = setupFakeApp();
+    const day = '2025-03-03';
+    // Boom: delivery order [U1 late, U2 early, U3 middle]; expected by ts: U2 gold, U3 silver, U1 bronze
+    const boomLate = toTsMicros(`${day}T12:00:00`, 800000);
+    const boomEarly = toTsMicros(`${day}T12:00:00`, 100000);
+    const boomMid = toTsMicros(`${day}T12:00:00`, 500000);
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: boomLate });
+    await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: boomEarly });
+    await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: boomMid });
+
+    // No reactions yet — deferred until both games complete podium
+    expect(t.calls.reactionsAddCalls.length).toBe(0);
+
+    // Hadeda podium also out-of-order: delivery [U4 late, U5 early, U6 middle]
+    const hadLate = toTsMicros(`${day}T12:00:10`, 800000);
+    const hadEarly = toTsMicros(`${day}T12:00:10`, 100000);
+    const hadMid = toTsMicros(`${day}T12:00:10`, 500000);
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U4', channel: 'C1', ts: hadLate });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U5', channel: 'C1', ts: hadEarly });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U6', channel: 'C1', ts: hadMid });
+
+    const byName = (name: string) => t.calls.reactionsAddCalls.filter((r) => r.name === name);
+    const gold = byName('first_place_medal').map((r) => r.timestamp).sort();
+    const silver = byName('second_place_medal').map((r) => r.timestamp).sort();
+    const bronze = byName('third_place_medal').map((r) => r.timestamp).sort();
+
+    // Gold on the earliest-ts message in each game
+    expect(gold).toEqual([boomEarly, hadEarly].sort());
+    // Silver on the middle-ts message in each game
+    expect(silver).toEqual([boomMid, hadMid].sort());
+    // Bronze on the latest-ts message in each game
+    expect(bronze).toEqual([boomLate, hadLate].sort());
+
+    // Total reactions: exactly 3 per game, no duplicates from arrival order
+    expect(t.calls.reactionsAddCalls.length).toBe(6);
+  });
+
+  it('ignores thread replies (does not award points or react)', async () => {
+    const t = setupFakeApp();
+    // Boom emoji posted as a reply in a thread rooted on a prior day
+    await t.triggerMessage({
+      text: ':boom:',
+      user: 'U1',
+      channel: 'C1',
+      ts: toTs('2025-03-03T12:00:05'),
+      thread_ts: toTs('2025-03-02T09:00:00'),
+    });
+    expect(t.calls.reactionsAddCalls.length).toBe(0);
+    expect(t.calls.chatPostCalls.length).toBe(0);
+    const raw = JSON.parse(readFileSync(join(process.cwd(), 'data', 'store.json'), 'utf8')) as any;
+    expect(raw.messages?.['2025-03-03']?.boom ?? []).toEqual([]);
+    expect(raw.counts?.['2025-03-03']).toBeUndefined();
   });
 
   it('app_mention leaderboard "no data" path posts empty leaderboard and no crown', async () => {

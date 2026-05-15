@@ -250,6 +250,35 @@ export class Store {
     return this.computePodium(date, game);
   }
 
+  /** Top-3 podium messages (earliest per user, sorted by ts) for reaction targeting. */
+  getPodiumMessages(date: string, game: Game): Winner[] {
+    this.ensureDay(date);
+    const msgs = this.getMessages(date, game);
+    if (!msgs.length) return [];
+    const earliestByUser = new Map<string, Winner>();
+    for (const m of msgs) {
+      const cur = earliestByUser.get(m.user_id);
+      if (!cur) {
+        earliestByUser.set(m.user_id, m);
+        continue;
+      }
+      const curT = parseSlackTs(cur.message_ts);
+      const newT = parseSlackTs(m.message_ts);
+      if (newT < curT || (newT === curT && m.message_ts < cur.message_ts)) {
+        earliestByUser.set(m.user_id, m);
+      }
+    }
+    return Array.from(earliestByUser.values())
+      .sort((a, b) => {
+        const at = parseSlackTs(a.message_ts);
+        const bt = parseSlackTs(b.message_ts);
+        if (at !== bt) return at - bt;
+        if (a.message_ts !== b.message_ts) return a.message_ts < b.message_ts ? -1 : 1;
+        return a.user_id < b.user_id ? -1 : a.user_id > b.user_id ? 1 : 0;
+      })
+      .slice(0, 3);
+  }
+
   markDailyAnnounced(date: string) {
     this.data.daily_announced[date] = DateTime.now().toISO();
     this.flush();
