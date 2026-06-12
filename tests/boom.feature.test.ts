@@ -209,15 +209,20 @@ describe('Boom feature integration-like behavior', () => {
     expect(text).toContain(':hadeda-boom:');
   });
 
-  it('posts a Friday Weekly Crown after the first Friday boom placement', async () => {
+  it('posts a Friday Weekly Crown once the Friday daily podium is complete', async () => {
     const t = setupFakeApp();
-    // Seed earlier week placements to create scores
-    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:01') }); // +5
-    await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:02') }); // +3
-    await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-03T12:00:03') }); // +1
+    // Seed earlier week placements to create scores: U1 +3, U2 +2, U3 +1
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:01') });
+    await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:02') });
+    await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-03T12:00:03') });
 
-    // On Friday, first boom placement by U1 should trigger crown
-    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-07T12:00:05') }); // +5
+    // Friday: complete both podiums so the daily announcement (and crown) fire. U1 wins both.
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-07T12:00:01') });
+    await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-07T12:00:02') });
+    await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-07T12:00:03') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-07T12:00:04') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-07T12:00:05') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-07T12:00:06') });
 
     const crownCalls = t.calls.chatPostCalls.filter((c) => typeof c.text === 'string' && c.text.includes('Boom Game — Weekly Crown'));
     expect(crownCalls.length).toBe(1);
@@ -317,6 +322,59 @@ describe('Boom feature integration-like behavior', () => {
     const raw = JSON.parse(readFileSync(join(process.cwd(), 'data', 'store.json'), 'utf8')) as any;
     expect(raw.messages?.['2025-03-03']?.boom ?? []).toEqual([]);
     expect(raw.counts?.['2025-03-03']).toBeUndefined();
+  });
+
+  it('crowns the actual week leader using the complete Friday podium, posting the crown after the daily podium', async () => {
+    // Regression: the crown must be computed from the same complete weeklyTotals as the
+    // printed daily podium, not from a partial mid-day snapshot taken on the first boom event.
+    // UJESSE carries 25 pts into Friday; UZ enters on 20 and takes 1st in both boom and hadeda
+    // on Friday (finishing on 26). Boom completes before hadeda, so a snapshot taken on the
+    // boom placement would wrongly crown UJESSE (25) over the not-yet-complete UZ (23).
+    const week = '2025-W10'; // ISO week containing 2025-03-03 .. 2025-03-07
+    const dataDir = join(process.cwd(), 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      join(dataDir, 'store.json'),
+      JSON.stringify({
+        placements: {},
+        counts: {},
+        daily_announced: {},
+        weekly_crowned: {},
+        weekly_kings: {},
+        weekly_adjustments: { [week]: { UJESSE: 25, UZ: 20, UA: 20, UB: 20 } },
+        messages: {},
+      }),
+      'utf8',
+    );
+
+    const t = setupFakeApp();
+
+    // Friday boom podium completes first: UZ 1st, UA 2nd, UB 3rd
+    await t.triggerMessage({ text: ':boom:', user: 'UZ', channel: 'C1', ts: toTs('2025-03-07T12:00:01') });
+    await t.triggerMessage({ text: ':boom:', user: 'UA', channel: 'C1', ts: toTs('2025-03-07T12:00:02') });
+    await t.triggerMessage({ text: ':boom:', user: 'UB', channel: 'C1', ts: toTs('2025-03-07T12:00:03') });
+
+    // No crown yet: Friday daily podium is not complete (hadeda still empty)
+    expect(t.calls.chatPostCalls.filter((c) => typeof c.text === 'string' && c.text.includes('Weekly Crown')).length).toBe(0);
+
+    // Friday hadeda podium completes: UZ 1st, UA 2nd, UB 3rd → UZ finishes on 26
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UZ', channel: 'C1', ts: toTs('2025-03-07T12:00:04') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UA', channel: 'C1', ts: toTs('2025-03-07T12:00:05') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UB', channel: 'C1', ts: toTs('2025-03-07T12:00:06') });
+
+    const podiumIdx = t.calls.chatPostCalls.findIndex((c) => typeof c.text === 'string' && c.text.includes('Daily Podium'));
+    const crownIdx = t.calls.chatPostCalls.findIndex((c) => typeof c.text === 'string' && c.text.includes('Weekly Crown'));
+
+    expect(podiumIdx).toBeGreaterThanOrEqual(0);
+    expect(crownIdx).toBeGreaterThanOrEqual(0);
+    // Crown posts after the daily podium message
+    expect(crownIdx).toBeGreaterThan(podiumIdx);
+
+    const crownText = t.calls.chatPostCalls[crownIdx].text as string;
+    expect(crownText).toContain('2025-03-03 to 2025-03-07');
+    expect(crownText).toContain('<@UZ>');
+    expect(crownText).toContain('26 pts');
+    expect(crownText).not.toContain('<@UJESSE>');
   });
 
   it('app_mention leaderboard "no data" path posts empty leaderboard and no crown', async () => {

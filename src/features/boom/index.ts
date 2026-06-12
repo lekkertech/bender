@@ -125,26 +125,25 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
         await client.chat.postMessage({ channel: m.channel, text: lines.join('\n') });
         db.markDailyAnnounced(date);
-      }
 
-      // Friday crown: immediately after Friday boom winner recorded
-      if (game === 'boom' && isFriday(date)) {
-        const wk = weekKeyFor(date);
-        if (!db.hasCrowned(wk)) {
-          const { start, end } = weekStartEnd(date);
-          const leaderboard = db.weeklyTotals(start, end);
-          if (leaderboard.length) {
-            const topPoints = leaderboard[0].points;
-            const winners = leaderboard.filter((r) => r.points === topPoints).map((r) => r.user_id);
-            // Persist crowned winners for this week (king definition: top after Friday boom)
-            db.setCrown(wk, winners, topPoints);
-            const crownLines = [
-              `👑 Boom Game — Weekly Crown (${start} to ${end})`,
-              `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
-            ];
-            await client.chat.postMessage({ channel: m.channel, text: crownLines.join('\n') });
+        // Friday crown: only once the Friday daily podium is complete, so the crown uses the
+        // same complete weeklyTotals as the podium above. Posted after the daily podium message.
+        if (isFriday(date)) {
+          const wk = weekKeyFor(date);
+          if (!db.hasCrowned(wk)) {
+            const board = db.weeklyTotals(start, end);
+            if (board.length) {
+              const topPoints = board[0].points;
+              const winners = board.filter((r) => r.points === topPoints).map((r) => r.user_id);
+              db.setCrown(wk, winners, topPoints);
+              const crownLines = [
+                `👑 Boom Game — Weekly Crown (${start} to ${end})`,
+                `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
+              ];
+              await client.chat.postMessage({ channel: m.channel, text: crownLines.join('\n') });
+            }
+            db.markCrowned(wk);
           }
-          db.markCrowned(wk);
         }
       }
     } catch (err) {
