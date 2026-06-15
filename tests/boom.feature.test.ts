@@ -377,6 +377,101 @@ describe('Boom feature integration-like behavior', () => {
     expect(crownText).not.toContain('<@UJESSE>');
   });
 
+  it('defers the Friday crown until each game has 3 SETTLED unique finishers, then crowns the true week leader (not the raw-count leader)', async () => {
+    // Regression for premature crown: the readiness gate must use the SETTLED podium count
+    // (placementsCount = unique earliest-ts finishers, top 3), NOT the raw running tally
+    // (counts, incremented on every valid post). Repeat posts from one already-placed user
+    // inflate counts to 3 while only 1 unique finisher has settled. Under the old counts-based
+    // gate the daily podium + Friday crown fire prematurely, crowning the week-to-date leader
+    // (UJESSE 25) before UZ's two 1st-place finishes (→ 26) have settled. Under the fixed gate,
+    // nothing announces until each needed game has 3 unique settled finishers, and the crown
+    // names UZ.
+    const week = '2025-W10'; // ISO week containing 2025-03-03 .. 2025-03-07
+    const dataDir = join(process.cwd(), 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      join(dataDir, 'store.json'),
+      JSON.stringify({
+        placements: {},
+        counts: {},
+        daily_announced: {},
+        weekly_crowned: {},
+        weekly_kings: {},
+        // UJESSE leads going into Friday on 25. UZ on 20 takes both Friday 1sts → 26.
+        // UA kept low so the premature (counts-based) crown lands unambiguously on UJESSE.
+        weekly_adjustments: { [week]: { UJESSE: 25, UZ: 20, UA: 10, UB: 10 } },
+        messages: {},
+      }),
+      'utf8',
+    );
+
+    const t = setupFakeApp();
+
+    // UA repeats boom 3x (distinct ts each, as real re-posts have): counts.boom → 3,
+    // placementsCount(boom) → 1 (UA only).
+    await t.triggerMessage({ text: ':boom:', user: 'UA', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:00', 100000) });
+    await t.triggerMessage({ text: ':boom:', user: 'UA', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:00', 200000) });
+    await t.triggerMessage({ text: ':boom:', user: 'UA', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:00', 300000) });
+
+    // UA repeats hadeda 3x: counts.hadeda → 3, placementsCount(hadeda) → 1.
+    // This is the moment the OLD gate (counts >= 3 for both) would fire and crown UJESSE.
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UA', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:01', 100000) });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UA', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:01', 200000) });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UA', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:01', 300000) });
+
+    // Under the fixed gate: no daily podium and no crown yet (only 1 unique finisher per game).
+    expect(t.calls.chatPostCalls.filter((c) => typeof c.text === 'string' && c.text.includes('Daily Podium')).length).toBe(0);
+    expect(t.calls.chatPostCalls.filter((c) => typeof c.text === 'string' && c.text.includes('Weekly Crown')).length).toBe(0);
+
+    // Now the real settled finishers arrive. UZ takes 1st in both games (earliest ts),
+    // UA already placed, UB rounds out each podium to 3 unique finishers.
+    await t.triggerMessage({ text: ':boom:', user: 'UZ', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:00', 50000) }); // earliest → boom 1st
+    await t.triggerMessage({ text: ':boom:', user: 'UB', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:00', 400000) }); // boom 3rd unique
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UZ', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:01', 50000) }); // earliest → hadeda 1st
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'UB', channel: 'C1', ts: toTsMicros('2025-03-07T12:00:01', 400000) }); // hadeda 3rd unique
+
+    // Now both games have 3 SETTLED unique finishers → daily podium + crown fire from settled data.
+    const podiumCalls = t.calls.chatPostCalls.filter((c) => typeof c.text === 'string' && c.text.includes('Daily Podium'));
+    const crownCalls = t.calls.chatPostCalls.filter((c) => typeof c.text === 'string' && c.text.includes('Weekly Crown'));
+    expect(podiumCalls.length).toBe(1);
+    expect(crownCalls.length).toBe(1);
+
+    const crownText = crownCalls[0].text as string;
+    expect(crownText).toContain('2025-03-03 to 2025-03-07');
+    // UZ: 20 + boom 1st (3) + hadeda 1st (3) = 26, beating UJESSE on 25.
+    expect(crownText).toContain('<@UZ>');
+    expect(crownText).toContain('26 pts');
+    expect(crownText).not.toContain('<@UJESSE>');
+  });
+
+  it('Store divergence: repeat posts from one user inflate getCounts past placementsCount', async () => {
+    // Documents the exact divergence the gate bug exploited. getCounts is a raw running tally
+    // (every valid post); placementsCount is unique settled finishers (earliest-ts, top 3).
+    // The fixed gate keys off placementsCount, so it only fires on 3 distinct finishers.
+    const { Store } = await import('../src/features/boom/store.ts');
+    const db = new Store();
+    const date = '2025-03-07';
+
+    // One user posts boom three times (distinct ts).
+    for (const micros of [100000, 200000, 300000]) {
+      db.incrementCount(date, 'boom');
+      db.addPlacement(date, 'boom', 'UA', toTsMicros(`${date}T12:00:00`, micros), 'C1');
+    }
+
+    // counts reaches 3 while only 1 unique finisher has settled.
+    expect(db.getCounts(date).boom).toBe(3);
+    expect(db.placementsCount(date, 'boom')).toBe(1);
+
+    // placementsCount only reaches 3 once 3 DISTINCT users have posted.
+    db.incrementCount(date, 'boom');
+    db.addPlacement(date, 'boom', 'UB', toTsMicros(`${date}T12:00:00`, 400000), 'C1');
+    expect(db.placementsCount(date, 'boom')).toBe(2);
+
+    db.incrementCount(date, 'boom');
+    db.addPlacement(date, 'boom', 'UZ', toTsMicros(`${date}T12:00:00`, 500000), 'C1');
+    expect(db.placementsCount(date, 'boom')).toBe(3);
+  });
+
   it('app_mention leaderboard "no data" path posts empty leaderboard and no crown', async () => {
     const t = setupFakeApp();
 

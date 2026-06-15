@@ -83,9 +83,11 @@ export function registerBoomFeature(app: App, cfg: Config) {
       // delivery cannot mis-tag the winners.
       db.addPlacement(date, game, m.user, tsStr, m.channel);
 
-      // Daily announcement trigger: thresholds
-      const counts = db.getCounts(date);
-      const ready = neededGames.every((g) => (counts[g] || 0) >= 3);
+      // Daily announcement trigger: gate on SETTLED podium count (unique earliest-ts finishers,
+      // top 3), matching the day-closed guard above. The raw running tally (counts) can reach 3
+      // via re-posts before 3 unique finishers have settled, which would fire the podium + Friday
+      // crown on incomplete data.
+      const ready = neededGames.every((g) => db.placementsCount(date, g) >= 3);
       if (ready && !db.hasDailyAnnounced(date)) {
         const lines: string[] = [];
         lines.push(`Boom Game — Daily Podium (${date})`);
@@ -241,8 +243,8 @@ export function registerBoomFeature(app: App, cfg: Config) {
         });
       }
 
-      // Append persisted king(s) from last crowned week (Friday after boom). Falls back to none.
-      const crown = db.getLatestCrown();
+      // King(s) recomputed live from the most-recent completed ISO week (settled totals), not a stale snapshot.
+      const crown = db.latestCompletedWeekWinner(date);
       blocks.push({ type: 'divider' });
       if (crown && crown.winners.length) {
         const kingNames = await Promise.all(crown.winners.map((u: string) => getName(u)));

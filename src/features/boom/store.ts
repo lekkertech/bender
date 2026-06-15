@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DateTime } from 'luxon';
-import { PODIUM_WEIGHTS, type Game } from './rules.js';
+import { PODIUM_WEIGHTS, TZ, weekKeyFor, weekStartEnd, type Game } from './rules.js';
 
 type Winner = { user_id: string; channel_id: string; message_ts: string; created_at: string };
 
@@ -339,6 +339,24 @@ export class Store {
       }
     }
     return latest;
+  }
+
+  // Recompute the current king live from settled weekly totals, avoiding stale Friday snapshots.
+  // Walks back from the ISO week before currentDate, returning the first week with results.
+  latestCompletedWeekWinner(
+    currentDate: string,
+  ): { weekKey: string; start: string; end: string; winners: string[]; points: number } | null {
+    const base = DateTime.fromISO(currentDate, { zone: TZ });
+    for (let back = 1; back <= 8; back++) {
+      const prevDate = base.minus({ weeks: back }).toISODate()!;
+      const { start, end } = weekStartEnd(prevDate);
+      const totals = this.weeklyTotals(start, end);
+      if (!totals.length) continue;
+      const points = totals[0].points;
+      const winners = totals.filter((t) => t.points === points).map((t) => t.user_id);
+      return { weekKey: weekKeyFor(prevDate), start, end, winners, points };
+    }
+    return null;
   }
 
   weeklyTotals(startDate: string, endDate: string): Array<{ user_id: string; points: number }> {
