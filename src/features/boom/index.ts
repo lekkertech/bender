@@ -1,6 +1,6 @@
 import type { App } from '@slack/bolt';
 import type { Config } from '../../env.js';
-import { getDisplayName, slackTsToSeconds } from '../../util/slack.js';
+import { makeDisplayNameResolver, slackTsToSeconds } from '../../util/slack.js';
 import { Store } from './store.js';
 import {
   detectGameFromMessage,
@@ -89,6 +89,8 @@ export function registerBoomFeature(app: App, cfg: Config) {
       // crown on incomplete data.
       const ready = neededGames.every((g) => db.placementsCount(date, g) >= 3);
       if (ready && !db.hasDailyAnnounced(date)) {
+        // Render display names instead of <@id> mentions so listed users are not notified.
+        const getName = makeDisplayNameResolver(client);
         const lines: string[] = [];
         lines.push(`Boom Game — Daily Podium (${date})`);
         const weights = PODIUM_WEIGHTS;
@@ -98,7 +100,9 @@ export function registerBoomFeature(app: App, cfg: Config) {
             lines.push(`• ${GAME_EMOJI[g]} — no podium yet`);
             continue;
           }
-          const podiumLine = podiumMsgs.map((pm, i) => `${i + 1}) <@${pm.user_id}> +${weights[i]}pt`);
+          const podiumLine = await Promise.all(
+            podiumMsgs.map(async (pm, i) => `${i + 1}) ${await getName(pm.user_id)} +${weights[i]}pt`),
+          );
           lines.push(`• ${GAME_EMOJI[g]} ${podiumLine.join('  ')}`);
           // Apply medal reactions to the actual 1st/2nd/3rd messages by ts (deferred to settle out-of-order delivery)
           for (let i = 0; i < podiumMsgs.length; i++) {
@@ -120,7 +124,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
           const top = leaderboard.slice(0, 10);
           let rank = 1;
           for (const row of top) {
-            lines.push(`${rank}. <@${row.user_id}> — ${row.points} pt${row.points === 1 ? '' : 's'}`);
+            lines.push(`${rank}. ${await getName(row.user_id)} — ${row.points} pt${row.points === 1 ? '' : 's'}`);
             rank++;
           }
         }
@@ -176,13 +180,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const leaderboard = db.weeklyTotals(start, end);
 
       // Resolve Slack display names to avoid notifying users (no <@...> mentions)
-      const nameCache = new Map<string, string>();
-      const getName = async (uid: string): Promise<string> => {
-        if (nameCache.has(uid)) return nameCache.get(uid)!;
-        const name = await getDisplayName(client, uid);
-        nameCache.set(uid, name);
-        return name;
-      };
+      const getName = makeDisplayNameResolver(client);
 
       // Fallback plain text for clients that don't render blocks
       const fallback: string[] = [];

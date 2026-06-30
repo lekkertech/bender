@@ -248,7 +248,9 @@ describe('Boom feature integration-like behavior', () => {
     const podium = t.calls.chatPostCalls.find((c) => typeof c.text === 'string' && c.text.includes('Daily Podium'));
     expect(podium).toBeDefined();
     const text = podium!.text as string;
-    expect(text).toMatch(/:boom: 1\) <@U2> \+3pt {2}2\) <@U3> \+2pt {2}3\) <@U1> \+1pt/);
+    expect(text).toMatch(/:boom: 1\) User U2 \+3pt {2}2\) User U3 \+2pt {2}3\) User U1 \+1pt/);
+    // Daily announcement must not notify listed users: no <@id> mentions anywhere in it.
+    expect(text).not.toContain('<@');
   });
 
   it('announcement handles microsecond-close out-of-order delivery correctly', async () => {
@@ -266,7 +268,7 @@ describe('Boom feature integration-like behavior', () => {
     expect(podium).toBeDefined();
     const text = podium!.text as string;
     // U2 (ts ...255559) must beat U1 (ts ...255560) despite arriving second
-    expect(text).toMatch(/:boom: 1\) <@U2> \+3pt {2}2\) <@U1> \+2pt {2}3\) <@U3> \+1pt/);
+    expect(text).toMatch(/:boom: 1\) User U2 \+3pt {2}2\) User U1 \+2pt {2}3\) User U3 \+1pt/);
   });
 
   it('applies gold/silver/bronze medals to the correct messages under out-of-order delivery', async () => {
