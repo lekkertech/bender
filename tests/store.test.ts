@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { DateTime } from 'luxon';
 import { Store } from '../src/features/boom/store.ts';
+
+const ZONE = 'Africa/Johannesburg';
 
 function withStore<T>(fn: (store: Store, dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), 'boom-store-'));
@@ -187,5 +190,136 @@ describe('Store', () => {
 
       // Query from 2025-02-24 (W09). Previous weeks W08..W01 (Dec 2024) hold no data.
       expect(db.latestCompletedWeekWinner('2025-02-24')).toBeNull();
+    }));
+});
+
+describe('Store random point assignment', () => {
+  const tsAt = (base: number, offset: number) => (base + offset).toFixed(6);
+
+  it('assigns each entrant a unique 1..n score, highest first, and never re-rolls', () =>
+    withStore((db) => {
+      const d = '2025-03-03';
+      const users = ['U1', 'U2', 'U3', 'U4', 'U5'];
+      users.forEach((u, i) => db.addPlacement(d, 'boom', u, tsAt(1740999600, i), 'C1'));
+
+      expect(db.isResolved(d, 'boom')).toBe(false);
+      expect(db.entrants(d, 'boom').map((e) => e.user_id)).toEqual(users);
+
+      const awards = db.resolveGame(d, 'boom');
+      expect(db.isResolved(d, 'boom')).toBe(true);
+      // n = 5 entrants → the amounts are exactly 5,4,3,2,1, one each
+      expect(awards.map((a) => a.points)).toEqual([5, 4, 3, 2, 1]);
+      expect(new Set(awards.map((a) => a.user_id))).toEqual(new Set(users));
+      // Each award keeps the entry message it belongs to, for medal reactions
+      expect(awards.every((a) => a.channel_id === 'C1' && a.message_ts)).toBe(true);
+
+      // Resolution is final: a second call returns the stored assignment untouched
+      expect(db.resolveGame(d, 'boom')).toEqual(awards);
+      expect(db.getAwards(d, 'boom')).toEqual(awards);
+
+      // Weekly totals score the settled awards
+      const totals = new Map(db.weeklyTotals('2025-03-03', '2025-03-07').map((r) => [r.user_id, r.points]));
+      for (const a of awards) expect(totals.get(a.user_id)).toBe(a.points);
+    }));
+
+  it('scores one entrant a single point and no entrants at all', () =>
+    withStore((db) => {
+      const d = '2025-03-03';
+      db.addPlacement(d, 'boom', 'U1', tsAt(1740999600, 0), 'C1');
+      expect(db.resolveGame(d, 'boom').map((a) => a.points)).toEqual([1]);
+
+      // A game nobody entered stays unresolved rather than settling empty
+      expect(db.resolveGame(d, 'hadeda')).toEqual([]);
+      expect(db.isResolved(d, 'hadeda')).toBe(false);
+    }));
+
+  it('entryFor returns the entry a user already has for that day and game', () =>
+    withStore((db) => {
+      const d = '2025-03-03';
+      expect(db.entryFor(d, 'boom', 'UA')).toBeNull();
+
+      const ts = tsAt(1740999600, 0);
+      db.addPlacement(d, 'boom', 'UA', ts, 'C1');
+      expect(db.entryFor(d, 'boom', 'UA')).toMatchObject({ user_id: 'UA', message_ts: ts, channel_id: 'C1' });
+      // Scoped per game, per user, per day
+      expect(db.entryFor(d, 'hadeda', 'UA')).toBeNull();
+      expect(db.entryFor(d, 'boom', 'UB')).toBeNull();
+      expect(db.entryFor('2025-03-04', 'boom', 'UA')).toBeNull();
+    }));
+
+  it('counts each user once, using their earliest entry message', () =>
+    withStore((db) => {
+      const d = '2025-03-03';
+      db.addPlacement(d, 'boom', 'UA', tsAt(1740999600, 0.3), 'C1');
+      db.addPlacement(d, 'boom', 'UA', tsAt(1740999600, 0.1), 'C1'); // earlier re-post
+      db.addPlacement(d, 'boom', 'UB', tsAt(1740999600, 0.2), 'C1');
+
+      const awards = db.resolveGame(d, 'boom');
+      expect(awards.length).toBe(2);
+      expect(awards.map((a) => a.points).sort()).toEqual([1, 2]);
+      expect(awards.find((a) => a.user_id === 'UA')!.message_ts).toBe(tsAt(1740999600, 0.1));
+    }));
+
+  it('anchors the tally window on the earliest entry', () =>
+    withStore((db) => {
+      const d = '2025-03-03';
+      const opened = 1740999600;
+      db.addPlacement(d, 'boom', 'U1', tsAt(opened, 30), 'C1');
+      expect(db.windowClosesAtMs(d, 'boom')).toBe((opened + 30) * 1000 + 5 * 60 * 1000);
+
+      // An out-of-order earlier entry moves the window back to the true first entry
+      db.addPlacement(d, 'boom', 'U2', tsAt(opened, 0), 'C1');
+      expect(db.windowOpenedAtMs(d, 'boom')).toBe(opened * 1000);
+      expect(db.windowClosesAtMs(d, 'boom')).toBe(opened * 1000 + 5 * 60 * 1000);
+
+      expect(db.windowOpenedAtMs(d, 'hadeda')).toBeNull();
+      expect(db.windowClosesAtMs(d, 'hadeda')).toBeNull();
+    }));
+
+  it('duePending lists closed-but-unsettled games only', () =>
+    withStore((db) => {
+      const now = DateTime.now().setZone(ZONE);
+      const date = now.toISODate()!;
+      const nowSec = now.toSeconds();
+
+      // Opened 10 minutes ago → its 5-minute window has closed
+      db.addPlacement(date, 'boom', 'U1', tsAt(nowSec, -600), 'C1');
+      db.addPlacement(date, 'boom', 'U2', tsAt(nowSec, -599), 'C1');
+      // Opened seconds ago → still collecting
+      db.addPlacement(date, 'hadeda', 'U1', tsAt(nowSec, -5), 'C2');
+
+      expect(db.duePending()).toEqual([{ date, game: 'boom', channel_id: 'C1' }]);
+
+      db.resolveGame(date, 'boom');
+      expect(db.duePending()).toEqual([]);
+    }));
+
+  it('keeps legacy 3-2-1 scoring for dates before the random-scoring cutover', () =>
+    withStore((db) => {
+      // The cutover is stamped on first construction, so these 2025 dates are pre-cutover.
+      const legacy = '2025-03-03';
+      db.addPlacement(legacy, 'boom', 'U1', '1740999600.000000', 'C1');
+      db.addPlacement(legacy, 'boom', 'U2', '1740999601.000000', 'C1');
+      db.addPlacement(legacy, 'boom', 'U3', '1740999602.000000', 'C1');
+      const legacyTotals = new Map(db.weeklyTotals(legacy, legacy).map((r) => [r.user_id, r.points]));
+      expect(legacyTotals.get('U1')).toBe(3);
+      expect(legacyTotals.get('U2')).toBe(2);
+      expect(legacyTotals.get('U3')).toBe(1);
+
+      // Nothing pre-cutover is ever re-settled with random points
+      expect(db.duePending().length).toBe(0);
+    }));
+
+  it('scores nothing for a random-era game until its window settles', () =>
+    withStore((db) => {
+      const now = DateTime.now().setZone(ZONE);
+      const date = now.toISODate()!;
+      db.addPlacement(date, 'boom', 'U9', now.toSeconds().toFixed(6), 'C1');
+
+      // Recorded, but provisional points must never leak into the leaderboard
+      expect(db.weeklyTotals(date, date)).toEqual([]);
+
+      db.resolveGame(date, 'boom');
+      expect(db.weeklyTotals(date, date)).toEqual([{ user_id: 'U9', points: 1 }]);
     }));
 });

@@ -1,9 +1,27 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DateTime } from 'luxon';
-import { PODIUM_WEIGHTS, TZ, weekKeyFor, weekStartEnd, type Game } from './rules.js';
+import {
+  assignRandomPoints,
+  ENTRY_WINDOW_MS,
+  GAMES,
+  PODIUM_WEIGHTS,
+  TZ,
+  weekKeyFor,
+  weekStartEnd,
+  type Game,
+} from './rules.js';
 
 type Winner = { user_id: string; channel_id: string; message_ts: string; created_at: string };
+
+/** A settled point award for one entrant, assigned when the game's tally window closed. */
+export type Award = {
+  user_id: string;
+  points: number;
+  channel_id: string;
+  message_ts: string;
+  awarded_at: string;
+};
 
 type StoreData = {
   // Legacy podium placements (arrival-ordered unique users). Kept for backward compatibility.
@@ -21,6 +39,14 @@ type StoreData = {
   // New: raw messages captured to derive podiums by earliest timestamp (ts), not arrival order.
   // date -> game -> array of Winner events (may include multiple per user; earliest counts)
   messages?: Record<string, Record<Game, Winner[]>>;
+
+  // Settled point awards per date+game, written once when the game's tally window closes.
+  // Presence of an array for date+game means that game is resolved and immutable.
+  awards?: Record<string, Partial<Record<Game, Award[]>>>;
+
+  // First date scored by random point assignment. Dates strictly before this are scored with
+  // the legacy 3-2-1 podium weights so historical leaderboards/crowns stay intact.
+  random_scoring_from?: string;
 };
 
 const initialData = (): StoreData => ({
@@ -30,6 +56,7 @@ const initialData = (): StoreData => ({
   weekly_crowned: {},
   weekly_kings: {},
   messages: {},
+  awards: {},
 });
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -59,6 +86,11 @@ function normalizeData(raw: Partial<StoreData & Record<string, unknown>>): Store
     messages: isObject((raw as any).messages)
       ? ((raw as any).messages as Record<string, Record<Game, Winner[]>>)
       : {},
+    awards: isObject((raw as any).awards)
+      ? ((raw as any).awards as Record<string, Partial<Record<Game, Award[]>>>)
+      : {},
+    random_scoring_from:
+      typeof (raw as any).random_scoring_from === 'string' ? ((raw as any).random_scoring_from as string) : undefined,
   };
 
   // Backward-compat: if legacy 'wins' exists, try to populate placements structure shallowly
@@ -102,6 +134,13 @@ export class Store {
       }
     } else {
       this.data = initialData();
+      this.flush();
+    }
+
+    // Stamp the random-scoring cutover on first use so every date already in the ledger keeps its
+    // legacy 3-2-1 scoring and is never retroactively re-assigned random points.
+    if (!this.data.random_scoring_from) {
+      this.data.random_scoring_from = DateTime.now().setZone(TZ).toISODate()!;
       this.flush();
     }
   }
@@ -250,9 +289,8 @@ export class Store {
     return this.computePodium(date, game);
   }
 
-  /** Top-3 podium messages (earliest per user, sorted by ts) for reaction targeting. */
-  getPodiumMessages(date: string, game: Game): Winner[] {
-    this.ensureDay(date);
+  /** One message per unique user (their earliest), sorted by ts ascending. */
+  private earliestMessagesByUser(date: string, game: Game): Winner[] {
     const msgs = this.getMessages(date, game);
     if (!msgs.length) return [];
     const earliestByUser = new Map<string, Winner>();
@@ -268,15 +306,107 @@ export class Store {
         earliestByUser.set(m.user_id, m);
       }
     }
-    return Array.from(earliestByUser.values())
-      .sort((a, b) => {
-        const at = parseSlackTs(a.message_ts);
-        const bt = parseSlackTs(b.message_ts);
-        if (at !== bt) return at - bt;
-        if (a.message_ts !== b.message_ts) return a.message_ts < b.message_ts ? -1 : 1;
-        return a.user_id < b.user_id ? -1 : a.user_id > b.user_id ? 1 : 0;
-      })
-      .slice(0, 3);
+    return Array.from(earliestByUser.values()).sort((a, b) => {
+      const at = parseSlackTs(a.message_ts);
+      const bt = parseSlackTs(b.message_ts);
+      if (at !== bt) return at - bt;
+      if (a.message_ts !== b.message_ts) return a.message_ts < b.message_ts ? -1 : 1;
+      return a.user_id < b.user_id ? -1 : a.user_id > b.user_id ? 1 : 0;
+    });
+  }
+
+  /** Every unique entrant for a date+game (earliest message per user), sorted by ts. */
+  entrants(date: string, game: Game): Winner[] {
+    this.ensureDay(date);
+    return this.earliestMessagesByUser(date, game);
+  }
+
+  /**
+   * This user's recorded entry for the date+game, or null if they have not entered yet.
+   * One entry per user per game, so a second valid post is a repeat rather than a new entrant.
+   */
+  entryFor(date: string, game: Game, user: string): Winner | null {
+    return this.earliestMessagesByUser(date, game).find((m) => m.user_id === user) || null;
+  }
+
+  /** ms epoch of the first valid entry for a date+game — when its tally window opened. */
+  windowOpenedAtMs(date: string, game: Game): number | null {
+    const msgs = this.getMessages(date, game);
+    if (!msgs.length) return null;
+    let earliest = Infinity;
+    for (const m of msgs) {
+      const t = parseSlackTs(m.message_ts);
+      if (t > 0 && t < earliest) earliest = t;
+    }
+    return Number.isFinite(earliest) ? earliest * 1000 : null;
+  }
+
+  /** ms epoch when the tally window for a date+game closes, or null if it never opened. */
+  windowClosesAtMs(date: string, game: Game): number | null {
+    const opened = this.windowOpenedAtMs(date, game);
+    return opened == null ? null : opened + ENTRY_WINDOW_MS;
+  }
+
+  /** True once points have been assigned for a date+game. Resolution is final. */
+  isResolved(date: string, game: Game): boolean {
+    return Array.isArray(this.data.awards?.[date]?.[game]);
+  }
+
+  /** Settled awards for a date+game, highest points first. Empty if unresolved. */
+  getAwards(date: string, game: Game): Award[] {
+    const arr = this.data.awards?.[date]?.[game];
+    return Array.isArray(arr) ? [...arr].sort((a, b) => b.points - a.points) : [];
+  }
+
+  /**
+   * Close a date+game's tally window and give each of the n unique entrants a unique random
+   * point value in 1..n. Idempotent: once resolved, the stored awards are returned unchanged.
+   */
+  resolveGame(date: string, game: Game, rng: () => number = Math.random): Award[] {
+    this.ensureDay(date);
+    if (this.isResolved(date, game)) return this.getAwards(date, game);
+
+    const entrants = this.earliestMessagesByUser(date, game);
+    if (!entrants.length) return []; // Nothing to resolve; window never opened.
+
+    const awarded_at = DateTime.now().toISO()!;
+    const awards: Award[] = assignRandomPoints(entrants, rng).map(({ entrant, points }) => ({
+      user_id: entrant.user_id,
+      points,
+      channel_id: entrant.channel_id,
+      message_ts: entrant.message_ts,
+      awarded_at,
+    }));
+
+    const byDate = (this.data.awards ||= {});
+    const perGame = (byDate[date] ||= {});
+    perGame[game] = awards;
+    // Mark the cutover the first time a game settles, so earlier dates keep legacy 3-2-1 scoring.
+    if (!this.data.random_scoring_from) this.data.random_scoring_from = date;
+    this.flush();
+    return awards;
+  }
+
+  /**
+   * Date+game pairs that have entries and a closed tally window but no awards yet — work the
+   * in-process timers missed (e.g. the bot restarted mid-window).
+   */
+  duePending(nowMs = Date.now()): Array<{ date: string; game: Game; channel_id: string }> {
+    const out: Array<{ date: string; game: Game; channel_id: string }> = [];
+    const from = this.data.random_scoring_from;
+    for (const date of Object.keys(this.data.messages || {})) {
+      // Pre-cutover dates were scored under the legacy podium rules; never re-settle them.
+      if (from && date < from) continue;
+      for (const game of GAMES) {
+        if (this.isResolved(date, game)) continue;
+        const closes = this.windowClosesAtMs(date, game);
+        if (closes == null || nowMs < closes) continue;
+        const first = this.earliestMessagesByUser(date, game)[0];
+        if (!first) continue;
+        out.push({ date, game, channel_id: first.channel_id || '' });
+      }
+    }
+    return out;
   }
 
   markDailyAnnounced(date: string) {
@@ -359,6 +489,26 @@ export class Store {
     return null;
   }
 
+  /**
+   * Points contributed by a single date+game.
+   * - Resolved games score their settled random awards.
+   * - Dates in the random-scoring era that have not settled yet score nothing (a window still
+   *   open at noon must not leak provisional points into the leaderboard).
+   * - Dates before the cutover keep the legacy 3-2-1 podium weights.
+   */
+  private scoreFor(date: string, game: Game): Array<{ user_id: string; points: number }> {
+    const awards = this.data.awards?.[date]?.[game];
+    if (Array.isArray(awards)) return awards.map((a) => ({ user_id: a.user_id, points: a.points }));
+
+    const from = this.data.random_scoring_from;
+    if (from && date >= from) return [];
+
+    return this.computePodium(date, game).map((user_id, idx) => ({
+      user_id,
+      points: PODIUM_WEIGHTS[idx] || 0,
+    }));
+  }
+
   weeklyTotals(startDate: string, endDate: string): Array<{ user_id: string; points: number }> {
     const res = new Map<string, number>();
     // Seed baselines if present for the week
@@ -367,19 +517,15 @@ export class Store {
     for (const [user, pts] of Object.entries(baselines)) {
       res.set(user, pts);
     }
-    // Iterate all wins in the date range
+    // Iterate all settled results in the date range
     let d = DateTime.fromISO(startDate);
     const end = DateTime.fromISO(endDate);
     for (; d <= end; d = d.plus({ days: 1 })) {
       const date = d.toISODate()!;
-      for (const g of ['boom', 'hadeda', 'wednesday'] as Game[]) {
-        const podium = this.computePodium(date, g);
-        if (!podium.length) continue;
-        const weights = PODIUM_WEIGHTS;
-        podium.forEach((uid, idx) => {
-          const pts = weights[idx] || 0;
-          if (pts > 0) res.set(uid, (res.get(uid) || 0) + pts);
-        });
+      for (const g of GAMES) {
+        for (const { user_id, points } of this.scoreFor(date, g)) {
+          if (points > 0) res.set(user_id, (res.get(user_id) || 0) + points);
+        }
       }
     }
     return Array.from(res.entries())

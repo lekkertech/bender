@@ -5,10 +5,12 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
 ## Features
 - Boom Game module (isolated):
   - Detect single-emoji messages in `#capetown` between 12:00:00–12:59:59
-  - Per-game podium scoring: 1st=3, 2nd=2, 3rd=1 (unique users)
-  - Count valid emoji posts; when thresholds met (≥3 of each), post daily podium + week-to-date leaderboard
-  - Immediately crown weekly winner(s) after Friday :boom: placement; leaderboard resets weekly (Mon)
-  - If any boom emoji is posted outside the window, after a game’s podium is full, or after the day is closed, the bot adds a :clown_face: reaction on that message
+  - Each emoji opens its own 5-minute tally window on its first valid entry; every unique entrant inside the window is counted
+  - One entry per player per emoji: accepted entries get a :white_check_mark: reaction to confirm they are in the tally
+  - When the window closes, the `n` entrants each draw a unique random amount between 1 and `n` (3 people sending :boom: split 3/2/1 in random order; 9 people sending :hadeda-boom: split 9…1)
+  - Post the daily results + week-to-date leaderboard once every game for the day has settled; medals go to the three biggest point earners
+  - Crown weekly winner(s) once Friday’s games have settled; leaderboard resets weekly (Mon)
+  - The bot adds a :clown_face: reaction (and ignores the message entirely) if a boom emoji is posted outside the window, after a game’s tally window has closed, after the day is closed, or as a repeat by a player who already entered that game
 - Chat (mentions):
   - AI-powered chat replies when a user mentions the bot (except "leaderboard", handled by Boom).
   - History is in-memory only, keyed by channel, and pruned by configurable caps. Replies honor `DEFAULT_REPLY_MODE` (thread or channel).

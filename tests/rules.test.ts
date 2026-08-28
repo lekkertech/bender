@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { DateTime } from 'luxon';
 import {
+  assignRandomPoints,
   detectGameFromMessage,
   detectAnyGameEmoji,
+  ENTRY_WINDOW_MS,
   inNoonWindow,
   localDayInfo,
+  neededGamesForDate,
   weekKeyFor,
   isFriday,
   weekStartEnd,
@@ -83,5 +86,62 @@ describe('rules.ts basics', () => {
     // Friday check on 2025-03-07
     expect(isFriday('2025-03-07')).toBe(true);
     expect(isFriday('2025-03-06')).toBe(false);
+  });
+
+  it('neededGamesForDate adds the wednesday game only on Wednesdays', () => {
+    expect(neededGamesForDate('2025-03-03')).toEqual(['boom', 'hadeda']); // Mon
+    expect(neededGamesForDate('2025-03-05')).toEqual(['boom', 'hadeda', 'wednesday']); // Wed
+    expect(neededGamesForDate('2025-03-07')).toEqual(['boom', 'hadeda']); // Fri
+  });
+
+  it('the tally window defaults to 5 minutes', () => {
+    expect(ENTRY_WINDOW_MS).toBe(5 * 60 * 1000);
+  });
+});
+
+describe('assignRandomPoints', () => {
+  it('gives each of n entrants a unique amount between 1 and n, highest first', () => {
+    for (const n of [1, 2, 3, 9, 25]) {
+      const entrants = Array.from({ length: n }, (_, i) => `U${i}`);
+      const result = assignRandomPoints(entrants);
+
+      // Every entrant appears exactly once
+      expect(result.length).toBe(n);
+      expect(new Set(result.map((r) => r.entrant)).size).toBe(n);
+      // Points are exactly the permutation 1..n — unique, no gaps
+      expect(result.map((r) => r.points).sort((a, b) => a - b)).toEqual(
+        Array.from({ length: n }, (_, i) => i + 1),
+      );
+      // Sorted highest points first
+      expect(result.map((r) => r.points)).toEqual([...result.map((r) => r.points)].sort((a, b) => b - a));
+      expect(result[0].points).toBe(n);
+    }
+  });
+
+  it('does not always hand the top score to the same entrant', () => {
+    // 200 draws over 5 entrants: a fixed-order implementation would give one entrant every win.
+    const winners = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      winners.add(assignRandomPoints(['A', 'B', 'C', 'D', 'E'])[0].entrant);
+    }
+    expect(winners.size).toBeGreaterThan(1);
+  });
+
+  it('is deterministic for a given rng and tolerates an rng returning 1', () => {
+    const zeros = assignRandomPoints(['A', 'B', 'C'], () => 0);
+    expect(zeros).toEqual([
+      { entrant: 'B', points: 3 },
+      { entrant: 'A', points: 2 },
+      { entrant: 'C', points: 1 },
+    ]);
+
+    // rng() === 1 must stay in range rather than swapping past the end of the array
+    const ones = assignRandomPoints(['A', 'B', 'C'], () => 1);
+    expect(ones.map((r) => r.points).sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    expect(new Set(ones.map((r) => r.entrant)).size).toBe(3);
+  });
+
+  it('returns nothing for no entrants', () => {
+    expect(assignRandomPoints([])).toEqual([]);
   });
 });
