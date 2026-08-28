@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { DateTime } from 'luxon';
 import { registerBoomFeature } from '../src/features/boom/index.ts';
 
@@ -496,5 +496,136 @@ describe('Boom feature integration-like behavior', () => {
     // Blocks present as well
     expect(Array.isArray(p.blocks)).toBe(true);
     expect(p.blocks.length).toBeGreaterThan(0);
+  });
+});
+
+
+describe('Boom feature: days that close short of a full podium', () => {
+  const setNow = (iso: string) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(DateTime.fromISO(iso, { zone: 'Africa/Johannesburg' }).toJSDate());
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const readStore = () =>
+    JSON.parse(readFileSync(join(process.cwd(), 'data', 'store.json'), 'utf8')) as any;
+
+  it('announces the day once the noon window closes even though hadeda had only 2 entrants', async () => {
+    setNow('2025-03-10T12:05:00');
+    const t = setupFakeApp();
+
+    for (const u of ['U1', 'U2', 'U3']) {
+      await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs('2025-03-10T12:00:0' + u[1]) });
+    }
+    for (const u of ['U1', 'U2']) {
+      await t.triggerMessage({ text: ':hadeda-boom:', user: u, channel: 'C1', ts: toTs('2025-03-10T12:01:0' + u[1]) });
+    }
+
+    // Window still open: nothing announced, because hadeda is one entrant short.
+    expect(t.calls.chatPostCalls.length).toBe(0);
+
+    // Window closes; the next message in the channel settles the day.
+    setNow('2025-03-10T13:00:01');
+    await t.triggerMessage({ text: 'afternoon all', user: 'U9', channel: 'C1', ts: toTs('2025-03-10T13:00:02') });
+
+    expect(t.calls.chatPostCalls.length).toBe(1);
+    const text = String(t.calls.chatPostCalls[0].text);
+    expect(text).toContain('Daily Podium (2025-03-10)');
+    expect(text).toContain(':hadeda-boom: 1) User U1 +3pt  2) User U2 +2pt');
+    expect(readStore().daily_announced['2025-03-10']).toBeTruthy();
+  });
+
+  it('renders "no entries" for a needed game nobody played', async () => {
+    setNow('2025-03-10T12:05:00');
+    const t = setupFakeApp();
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:00:01') });
+
+    setNow('2025-03-10T13:00:01');
+    await t.triggerMessage({ text: 'hi', user: 'U9', channel: 'C1', ts: toTs('2025-03-10T13:00:02') });
+
+    expect(String(t.calls.chatPostCalls[0].text)).toContain(':hadeda-boom: — no entries');
+  });
+
+  it('crowns the week on a short Friday instead of stalling forever', async () => {
+    setNow('2025-03-14T12:05:00');
+    const t = setupFakeApp();
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-14T12:00:01') });
+    expect(t.calls.chatPostCalls.length).toBe(0);
+
+    setNow('2025-03-14T13:00:01');
+    await t.triggerMessage({ text: 'hi', user: 'U9', channel: 'C1', ts: toTs('2025-03-14T13:00:02') });
+
+    expect(t.calls.chatPostCalls.length).toBe(2);
+    expect(String(t.calls.chatPostCalls[1].text)).toContain('Weekly Crown');
+    expect(readStore().weekly_crowned['2025-W11']).toBeTruthy();
+  });
+
+  it('does not sweep days older than the backfill window', async () => {
+    setNow('2025-03-10T12:05:00');
+    const t = setupFakeApp();
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:00:01') });
+
+    // A week later: the stalled day is past the backfill horizon and stays unannounced.
+    setNow('2025-03-17T09:00:00');
+    await t.triggerMessage({ text: 'hi', user: 'U9', channel: 'C1', ts: toTs('2025-03-17T09:00:01') });
+
+    expect(t.calls.chatPostCalls.length).toBe(0);
+    expect(readStore().daily_announced['2025-03-10']).toBeUndefined();
+  });
+});
+
+describe('Boom feature: crown and notice regressions', () => {
+  const readStore = () =>
+    JSON.parse(readFileSync(join(process.cwd(), 'data', 'store.json'), 'utf8')) as any;
+
+  it('does not record a king when the crown message fails to post', async () => {
+    const t = setupFakeApp();
+    let posts = 0;
+    t.client.chat.postMessage = async (args: any) => {
+      posts++;
+      if (String(args.text).includes('Weekly Crown')) throw new Error('rate_limited');
+      return { ts: '1.23' };
+    };
+
+    for (const g of [':boom:', ':hadeda-boom:']) {
+      for (const u of ['U1', 'U2', 'U3']) {
+        await t.triggerMessage({ text: g, user: u, channel: 'C1', ts: toTs('2025-03-14T12:00:0' + u[1]) });
+      }
+    }
+
+    const raw = readStore();
+    expect(posts).toBe(2); // podium posted, crown attempted
+    expect(raw.daily_announced['2025-03-14']).toBeTruthy();
+    expect(raw.weekly_crowned['2025-W11']).toBeUndefined();
+    expect(raw.weekly_kings['2025-W11']).toBeUndefined();
+  });
+
+  it('tells the channel the game is off once per weekend day, not once per poster', async () => {
+    const t = setupFakeApp();
+    for (const u of ['U1', 'U2', 'U3']) {
+      await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs('2025-03-15T12:00:0' + u[1]) });
+    }
+    expect(t.calls.chatPostCalls.length).toBe(1);
+    expect(String(t.calls.chatPostCalls[0].text)).toContain("Boom isn't played today");
+  });
+
+  it('posts a single podium when the two finishing messages land in the same tick', async () => {
+    const t = setupFakeApp();
+    for (const u of ['U1', 'U2', 'U3']) {
+      await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs('2025-03-10T12:00:0' + u[1]) });
+    }
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:01:01') });
+
+    // Both finishers delivered together; each sees an incomplete podium before the other writes.
+    await Promise.all([
+      t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-10T12:01:02') }),
+      t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-10T12:01:03') }),
+    ]);
+
+    const podiums = t.calls.chatPostCalls.filter((c: any) => String(c.text).includes('Daily Podium'));
+    expect(podiums.length).toBe(1);
   });
 });

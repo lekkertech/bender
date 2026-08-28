@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 export type Game = 'boom' | 'hadeda' | 'wednesday';
 
+export const GAMES: readonly Game[] = ['boom', 'hadeda', 'wednesday'] as const;
+
 /** Podium points awarded to 1st, 2nd, 3rd place. */
 export const PODIUM_WEIGHTS = [3, 2, 1] as const;
 
@@ -30,6 +32,29 @@ export function localDayInfo(tsSeconds: number): DayInfo {
   const isHoliday = isHolidayDate(date);
   const isWorkday = weekday >= 1 && weekday <= 5 && !isHoliday;
   return { date, weekday, isHoliday, isWorkday };
+}
+
+/** Games that must be settled before a date's results can be announced. */
+export function neededGamesForDate(date: string): Game[] {
+  const weekday = DateTime.fromISO(date, { zone: TZ }).weekday;
+  return weekday === 3 ? ['boom', 'hadeda', 'wednesday'] : ['boom', 'hadeda'];
+}
+
+/** Boom is only played Mon-Fri, excluding public holidays. */
+export function isWorkdayDate(date: string): boolean {
+  const weekday = DateTime.fromISO(date, { zone: TZ }).weekday;
+  return weekday >= 1 && weekday <= 5 && !isHolidayDate(date);
+}
+
+/**
+ * ms epoch at which a date's noon window closes (13:00:00 local).
+ * After this instant no further entries can arrive, so the day's results are final
+ * whether or not every game filled its podium.
+ */
+export function noonWindowEndMs(date: string): number {
+  return DateTime.fromISO(date, { zone: TZ })
+    .set({ hour: 13, minute: 0, second: 0, millisecond: 0 })
+    .toMillis();
 }
 
 export function inNoonWindow(tsSeconds: number): boolean {

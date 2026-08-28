@@ -65,3 +65,29 @@ Operational notes:
 - Ensure CHAT_ALLOWED_CHANNELS limits where context is accumulated, if desired.
 - If you need to clear context: use the admin-only “@bot clear chat [all]” commands.
 - For debugging, “@bot context” shows the current channel transcript and high-level counts across channels.
+
+## Boom Game Day Settlement
+
+Effective 2026-08-28, a Boom day no longer needs every game to reach three entrants before it is
+announced. A day is settled the moment all required games have three unique entrants, and
+otherwise once its noon window closes at 13:00 local time.
+
+Key points:
+- Trigger: `announceClosedDays` runs at the top of the message handler, on `@bot leaderboard`, and
+  on a 60s interval when `app.client` is available (absent in the unit-test harness).
+- Backfill bound: `ANNOUNCE_BACKFILL_DAYS = 2`. Days whose window closed longer ago are skipped, so
+  deploying this change cannot post podiums for days that stalled months ago. Those days stay
+  unannounced.
+- Partial podiums: a game with one or two entrants scores 3 and 2 points as usual; a game with no
+  entrants renders `— no entries`.
+- Friday crown: written to `weekly_kings` / `weekly_crowned` only after `chat.postMessage` succeeds,
+  so a rate-limited crown post is retried rather than leaving a king nobody was told about. A week
+  with no results is left uncrowned instead of being marked crowned.
+- Weekend/holiday notice: tracked in process memory per date, so one reply per weekend day. A
+  restart resets the tracker and can produce a second notice.
+
+Relevant implementation:
+- Announce path (`announceDay`, `postDailyPodium`, `postWeeklyCrown`, `announceClosedDays`): [src/features/boom/index.ts](../src/features/boom/index.ts)
+- Store helpers (`recordedDates`, `hasAnyPlacement`, `channelForDate`): [src/features/boom/store.ts](../src/features/boom/store.ts)
+- Window helpers (`noonWindowEndMs`, `isWorkdayDate`, `neededGamesForDate`): [src/features/boom/rules.ts](../src/features/boom/rules.ts)
+- Tests: [tests/boom.feature.test.ts](../tests/boom.feature.test.ts)

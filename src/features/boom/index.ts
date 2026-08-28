@@ -8,6 +8,9 @@ import {
   inNoonWindow,
   localDayInfo,
   isFriday,
+  isWorkdayDate,
+  neededGamesForDate,
+  noonWindowEndMs,
   weekKeyFor,
   weekStartEnd,
   PODIUM_WEIGHTS,
@@ -17,6 +20,15 @@ import {
 
 const PODIUM_MEDALS = ['first_place_medal', 'second_place_medal', 'third_place_medal'] as const;
 
+/** How often to look for a day whose noon window closed while the channel stayed quiet. */
+const SWEEP_INTERVAL_MS = 60 * 1000;
+
+/**
+ * How far back the closed-day sweep will reach. Bounded so deploying this fix cannot flood the
+ * channel with podiums for days that stalled months ago.
+ */
+const ANNOUNCE_BACKFILL_DAYS = 2;
+
 function inAllowedChannel(cfg: Config, channel?: string): boolean {
   if (!cfg.allowedChannels) return true;
   return channel ? cfg.allowedChannels.has(channel) : false;
@@ -24,6 +36,130 @@ function inAllowedChannel(cfg: Config, channel?: string): boolean {
 
 export function registerBoomFeature(app: App, cfg: Config) {
   const db = new Store();
+
+  // Dates whose announcement is mid-flight, so a second message arriving during an await cannot
+  // post the podium twice.
+  const announcing = new Set<string>();
+
+  // Dates already told "Boom isn't played today", so a busy weekend gets one reply, not one per post.
+  const notPlayedNotified = new Set<string>();
+
+  /** Post a day's podium once. The first completed run marks the day announced. */
+  async function announceDay(client: any, date: string, channel: string) {
+    if (db.hasDailyAnnounced(date) || announcing.has(date)) return;
+    announcing.add(date);
+    try {
+      await postDailyPodium(client, date, channel);
+    } finally {
+      announcing.delete(date);
+    }
+  }
+
+  async function postDailyPodium(client: any, date: string, channel: string) {
+    const neededGames = neededGamesForDate(date);
+    // Render display names instead of <@id> mentions so listed users are not notified.
+    const getName = makeDisplayNameResolver(client);
+    const lines: string[] = [`Boom Game — Daily Podium (${date})`];
+
+    for (const g of neededGames) {
+      // A game can finish with fewer than three entrants; it still gets its podium line.
+      const podiumMsgs = db.getPodiumMessages(date, g);
+      if (!podiumMsgs.length) {
+        lines.push(`• ${GAME_EMOJI[g]} — no entries`);
+        continue;
+      }
+      const podiumLine = await Promise.all(
+        podiumMsgs.map(async (pm, i) => `${i + 1}) ${await getName(pm.user_id)} +${PODIUM_WEIGHTS[i]}pt`),
+      );
+      lines.push(`• ${GAME_EMOJI[g]} ${podiumLine.join('  ')}`);
+      // Apply medal reactions to the actual 1st/2nd/3rd messages by ts (deferred to settle
+      // out-of-order delivery).
+      for (let i = 0; i < podiumMsgs.length; i++) {
+        const medal = PODIUM_MEDALS[i];
+        const pm = podiumMsgs[i];
+        if (!medal || !pm.channel_id || !pm.message_ts) continue;
+        try {
+          await client.reactions.add({ channel: pm.channel_id, timestamp: pm.message_ts, name: medal });
+        } catch {}
+      }
+    }
+
+    // Leaderboard (Mon–Fri of this week up to current date)
+    const { start, end } = weekStartEnd(date);
+    const leaderboard = db.weeklyTotals(start, end);
+    if (leaderboard.length) {
+      lines.push('');
+      lines.push('Leaderboard (week-to-date):');
+      let rank = 1;
+      for (const row of leaderboard.slice(0, 10)) {
+        lines.push(`${rank}. ${await getName(row.user_id)} — ${row.points} pt${row.points === 1 ? '' : 's'}`);
+        rank++;
+      }
+    }
+
+    await client.chat.postMessage({ channel, text: lines.join('\n') });
+    db.markDailyAnnounced(date);
+
+    // Friday crown: posted after the daily podium, using the same settled weeklyTotals.
+    if (isFriday(date)) await postWeeklyCrown(client, date, channel, start, end);
+  }
+
+  /**
+   * Crown state is written only after the crown message posts, so a failed post leaves the week
+   * uncrowned and retryable rather than recording a king nobody was told about.
+   */
+  async function postWeeklyCrown(client: any, date: string, channel: string, start: string, end: string) {
+    const wk = weekKeyFor(date);
+    if (db.hasCrowned(wk)) return;
+    const board = db.weeklyTotals(start, end);
+    if (!board.length) return; // No results this week: leave it uncrowned rather than marking it.
+
+    const topPoints = board[0].points;
+    const winners = board.filter((r) => r.points === topPoints).map((r) => r.user_id);
+    const crownLines = [
+      `👑 Boom Game — Weekly Crown (${start} to ${end})`,
+      `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
+    ];
+    await client.chat.postMessage({ channel, text: crownLines.join('\n') });
+    db.setCrown(wk, winners, topPoints);
+    db.markCrowned(wk);
+  }
+
+  /**
+   * Announce any recent workday whose noon window has closed but was never announced, which
+   * happens whenever a game finishes with fewer than three entrants. Without this the day's
+   * podium and that week's crown stall forever.
+   */
+  async function announceClosedDays(client: any, logger?: any, nowMs = Date.now()) {
+    const oldest = nowMs - ANNOUNCE_BACKFILL_DAYS * 24 * 60 * 60 * 1000;
+    for (const date of db.recordedDates()) {
+      if (db.hasDailyAnnounced(date)) continue;
+      if (!isWorkdayDate(date)) continue;
+      const closesAt = noonWindowEndMs(date);
+      if (nowMs < closesAt || closesAt < oldest) continue;
+      if (!db.hasAnyPlacement(date)) continue;
+      const channel = db.channelForDate(date);
+      if (!channel) {
+        logger?.warn?.({ date }, '[boom] cannot announce daily podium: no channel recorded');
+        continue;
+      }
+      try {
+        await announceDay(client, date, channel);
+      } catch (err) {
+        logger?.error?.(err);
+      }
+    }
+  }
+
+  // Catch closed days even when the channel goes quiet. app.client is absent in unit-test
+  // harnesses, where announceClosedDays is driven by incoming messages instead.
+  const sweepClient = (app as any).client;
+  if (sweepClient) {
+    const sweep = setInterval(() => {
+      announceClosedDays(sweepClient, (app as any).logger).catch(() => {});
+    }, SWEEP_INTERVAL_MS);
+    sweep.unref?.();
+  }
 
   // Listen to all messages and filter ourselves
   app.message(async ({ message, client, logger }) => {
@@ -38,7 +174,10 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const tsSeconds = slackTsToSeconds(tsStr);
       const { date, weekday, isWorkday, isHoliday } = localDayInfo(tsSeconds);
       const inWindow = inNoonWindow(tsSeconds);
-      const neededGames: Game[] = weekday === 3 ? ['boom', 'hadeda', 'wednesday'] : ['boom', 'hadeda'];
+      const neededGames = neededGamesForDate(date);
+
+      // Settle any day whose window closed short of a full podium.
+      await announceClosedDays(client, logger);
 
       // If a game emoji is posted outside the window, add a clown reaction.
       // (Do this before any store reads/writes so we never mutate state on non-workdays.)
@@ -52,17 +191,21 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
       // Boom Game is only played on workdays; on weekends/holidays, explicitly tell users.
       if (!isWorkday) {
-        if (anyEmoji && inWindow) {
+        // One notice per date, so a busy weekend does not get a reply per poster.
+        if (anyEmoji && inWindow && !notPlayedNotified.has(date)) {
+          notPlayedNotified.add(date);
           const reason = isHoliday ? "it's a holiday" : 'it\'s the weekend';
           await client.chat.postMessage({ channel: m.channel, text: `Boom isn't played today — ${reason}.` });
         }
         return;
       }
 
-      // If a game emoji is posted outside the window, or the competition is already closed (podiums decided), add a clown reaction
-      const gameClosed = anyEmoji ? (db.placementsCount(date, anyEmoji) >= 3) : false;
-      const dayClosed = neededGames.every((g) => db.placementsCount(date, g) >= 3);
-      if (anyEmoji && (!inWindow || gameClosed || dayClosed)) {
+      // Clown a game emoji once its own podium is full, or once the day is already decided.
+      // Posts outside the window returned above, so the window is not re-checked here.
+      const gameClosed = anyEmoji ? db.placementsCount(date, anyEmoji) >= 3 : false;
+      const dayClosed =
+        db.hasDailyAnnounced(date) || neededGames.every((g) => db.placementsCount(date, g) >= 3);
+      if (anyEmoji && (gameClosed || dayClosed)) {
         try {
           await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: 'clown_face' });
         } catch {}
@@ -75,7 +218,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       if (!game) return;
 
       // Count this valid emoji occurrence
-      const count = db.incrementCount(date, game);
+      db.incrementCount(date, game);
 
       // Podium placements 1st/2nd/3rd (unique users). After 3, further posts are clowned above.
       // Pass Slack message timestamp so placements are decided by earliest ts, not arrival order.
@@ -83,74 +226,11 @@ export function registerBoomFeature(app: App, cfg: Config) {
       // delivery cannot mis-tag the winners.
       db.addPlacement(date, game, m.user, tsStr, m.channel);
 
-      // Daily announcement trigger: gate on SETTLED podium count (unique earliest-ts finishers,
-      // top 3), matching the day-closed guard above. The raw running tally (counts) can reach 3
-      // via re-posts before 3 unique finishers have settled, which would fire the podium + Friday
-      // crown on incomplete data.
-      const ready = neededGames.every((g) => db.placementsCount(date, g) >= 3);
-      if (ready && !db.hasDailyAnnounced(date)) {
-        // Render display names instead of <@id> mentions so listed users are not notified.
-        const getName = makeDisplayNameResolver(client);
-        const lines: string[] = [];
-        lines.push(`Boom Game — Daily Podium (${date})`);
-        const weights = PODIUM_WEIGHTS;
-        for (const g of neededGames) {
-          const podiumMsgs = db.getPodiumMessages(date, g);
-          if (!podiumMsgs.length) {
-            lines.push(`• ${GAME_EMOJI[g]} — no podium yet`);
-            continue;
-          }
-          const podiumLine = await Promise.all(
-            podiumMsgs.map(async (pm, i) => `${i + 1}) ${await getName(pm.user_id)} +${weights[i]}pt`),
-          );
-          lines.push(`• ${GAME_EMOJI[g]} ${podiumLine.join('  ')}`);
-          // Apply medal reactions to the actual 1st/2nd/3rd messages by ts (deferred to settle out-of-order delivery)
-          for (let i = 0; i < podiumMsgs.length; i++) {
-            const medal = PODIUM_MEDALS[i];
-            const pm = podiumMsgs[i];
-            if (!medal || !pm.channel_id || !pm.message_ts) continue;
-            try {
-              await client.reactions.add({ channel: pm.channel_id, timestamp: pm.message_ts, name: medal });
-            } catch {}
-          }
-        }
-
-        // Leaderboard (Mon–Fri of this week up to current date)
-        const { start, end } = weekStartEnd(date);
-        const leaderboard = db.weeklyTotals(start, end);
-        if (leaderboard.length) {
-          lines.push('');
-          lines.push('Leaderboard (week-to-date):');
-          const top = leaderboard.slice(0, 10);
-          let rank = 1;
-          for (const row of top) {
-            lines.push(`${rank}. ${await getName(row.user_id)} — ${row.points} pt${row.points === 1 ? '' : 's'}`);
-            rank++;
-          }
-        }
-
-        await client.chat.postMessage({ channel: m.channel, text: lines.join('\n') });
-        db.markDailyAnnounced(date);
-
-        // Friday crown: only once the Friday daily podium is complete, so the crown uses the
-        // same complete weeklyTotals as the podium above. Posted after the daily podium message.
-        if (isFriday(date)) {
-          const wk = weekKeyFor(date);
-          if (!db.hasCrowned(wk)) {
-            const board = db.weeklyTotals(start, end);
-            if (board.length) {
-              const topPoints = board[0].points;
-              const winners = board.filter((r) => r.points === topPoints).map((r) => r.user_id);
-              db.setCrown(wk, winners, topPoints);
-              const crownLines = [
-                `👑 Boom Game — Weekly Crown (${start} to ${end})`,
-                `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
-              ];
-              await client.chat.postMessage({ channel: m.channel, text: crownLines.join('\n') });
-            }
-            db.markCrowned(wk);
-          }
-        }
+      // Full house: announce straight away rather than waiting for the window to close. Gate on
+      // SETTLED podium count (unique earliest-ts finishers), not the raw running tally, which can
+      // reach 3 via re-posts before 3 unique finishers have settled.
+      if (neededGames.every((g) => db.placementsCount(date, g) >= 3)) {
+        await announceDay(client, date, m.channel);
       }
     } catch (err) {
       logger?.error?.(err);
@@ -175,6 +255,9 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const tsSeconds = slackTsToSeconds(tsStr);
       const { date } = localDayInfo(tsSeconds);
       const { start, end } = weekStartEnd(date);
+
+      // Settle any closed-but-unannounced day first so the leaderboard reflects today's results.
+      await announceClosedDays(client, logger);
 
       // Compute week-to-date leaderboard and render nicely via Block Kit (reply in-channel, not thread)
       const leaderboard = db.weeklyTotals(start, end);
