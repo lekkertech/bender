@@ -25,8 +25,10 @@ Strategies and checklists to validate your Slack bot.
 - Boom module:
   - Noon window: posting `:boom:` / `💥`, `:hadeda-boom:`, and (Wed only) `:wednesday-boom:` between 12:00–12:59 records counts and podiums.
   - Outside window or after podium full/day closed: bot adds `:clown_face:` reaction.
-  - Daily podium auto-post when each required game reaches 3 valid posts.
-  - Friday crown after first Friday `:boom:` podium placement posts weekly winners.
+  - Daily podium auto-post when each required game reaches 3 unique entrants.
+  - Daily podium also posts once the noon window closes (13:00 local) for a day that fell short, driven by the next message in the channel or a 60s sweep; games with no entrants render `— no entries`.
+  - Friday crown posts with the Friday podium; the crown is persisted only after the message succeeds.
+  - Weekend/holiday "Boom isn't played today" notice is posted once per date, not once per poster.
   - `@bot leaderboard` prints week-to-date leaderboard with current king(s).
 - Chat module (app mentions):
   - `@bot hello there` yields an AI reply in-channel by default (threaded if `DEFAULT_REPLY_MODE=thread`).

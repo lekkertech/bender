@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DateTime } from 'luxon';
-import { PODIUM_WEIGHTS, TZ, weekKeyFor, weekStartEnd, type Game } from './rules.js';
+import { GAMES, PODIUM_WEIGHTS, TZ, weekKeyFor, weekStartEnd, type Game } from './rules.js';
 
 type Winner = { user_id: string; channel_id: string; message_ts: string; created_at: string };
 
@@ -279,6 +279,31 @@ export class Store {
       .slice(0, 3);
   }
 
+  /** Every date with recorded activity, ascending. Used to find days still awaiting results. */
+  recordedDates(): string[] {
+    const set = new Set<string>([
+      ...Object.keys(this.data.messages || {}),
+      ...Object.keys(this.data.placements || {}),
+    ]);
+    return Array.from(set)
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+  }
+
+  /** True when at least one game on this date has a settled placement. */
+  hasAnyPlacement(date: string): boolean {
+    return GAMES.some((g) => this.computePodium(date, g).length > 0);
+  }
+
+  /** The channel a date's earliest recorded entry came from, or null if none was stored. */
+  channelForDate(date: string): string | null {
+    for (const g of GAMES) {
+      const msg = this.getPodiumMessages(date, g).find((m) => m.channel_id);
+      if (msg) return msg.channel_id;
+    }
+    return null;
+  }
+
   markDailyAnnounced(date: string) {
     this.data.daily_announced[date] = DateTime.now().toISO();
     this.flush();
@@ -372,7 +397,7 @@ export class Store {
     const end = DateTime.fromISO(endDate);
     for (; d <= end; d = d.plus({ days: 1 })) {
       const date = d.toISODate()!;
-      for (const g of ['boom', 'hadeda', 'wednesday'] as Game[]) {
+      for (const g of GAMES) {
         const podium = this.computePodium(date, g);
         if (!podium.length) continue;
         const weights = PODIUM_WEIGHTS;
