@@ -6,9 +6,9 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
 - Boom Game module (isolated):
   - Detect single-emoji messages in `#capetown` between 12:00:00–12:59:59
   - Per-game podium scoring: 1st=3, 2nd=2, 3rd=1 (unique users)
-  - Count valid emoji posts; post the daily podium + week-to-date leaderboard as soon as every required game has 3 unique entrants, or otherwise once the noon window closes (a game with fewer than 3 entrants still gets a podium)
+  - Count valid emoji posts; post the daily podium + week-to-date leaderboard once every required game has 3 unique entrants (after a short grace window, `BOOM_ANNOUNCE_GRACE_MS`, default 15s, so out-of-order Slack delivery settles), or otherwise once the noon window closes (a game with fewer than 3 entrants still gets a podium)
   - Crown weekly winner(s) once Friday's podium posts; the crown is recorded only after the message posts, so a failed post retries. Leaderboard resets weekly (Mon)
-  - If any boom emoji is posted outside the window, after a game’s podium is full, or after the day is closed, the bot adds a :clown_face: reaction on that message
+  - If any boom emoji is posted outside the window, fails to earn a place on the settled (earliest-timestamp) podium, or arrives after the day's results are announced, the bot adds a :clown_face: reaction on that message
 - Chat (mentions):
   - AI-powered chat replies when a user mentions the bot (except "leaderboard", handled by Boom).
   - History is in-memory only, keyed by channel, and pruned by configurable caps. Replies honor `DEFAULT_REPLY_MODE` (thread or channel).
@@ -64,6 +64,7 @@ See `docs/CONFIG.md` for more details.
   - `TIMEZONE=Africa/Johannesburg`
   - `ALLOWED_CHANNELS=C0919MX7KJS` (your `#capetown` channel ID)
   - Optionally `HOLIDAYS=YYYY-MM-DD,YYYY-MM-DD` to add extra dates
+  - Optionally `BOOM_ANNOUNCE_GRACE_MS=15000` (ms to hold the full-house podium announcement while out-of-order Slack delivery settles; 0 = immediate)
   - Chat fallback is configurable via `CHAT_*` variables. See docs/CONFIG.md.
 
 ## Holidays

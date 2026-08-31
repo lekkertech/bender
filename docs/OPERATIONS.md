@@ -29,7 +29,9 @@ Day-2 operations for your Slack bot: monitoring, rotation, and recovery.
 
 ## Boom Game Ordering and Data Notes
 
-Effective 2025-09-10, the Boom game podium is computed by earliest Slack message timestamp (`event.ts`), not by order of receipt over WebSocket. This prevents out-of-order delivery from affecting results.
+Effective 2025-09-10, the Boom game podium is computed by earliest Slack message timestamp (`event.ts`), not by order of receipt over WebSocket. This re-ranks recorded messages, so out-of-order delivery cannot reorder them.
+
+Effective 2026-08-31, every valid in-window message is recorded before any clown judgment, and the full-house announcement waits for a grace window (`BOOM_ANNOUNCE_GRACE_MS`, default 15000ms; 0 announces immediately). Both guard the same race, proven in production on 2026-08-31 and reproduced in `tests/boom.race.test.ts`: Slack delivered the true 3rd-by-ts hadeda entry after the 4th had filled the podium, so the old code clowned it unrecorded and the 4th-by-ts entry kept bronze. A message is clowned only when it holds no place on the settled podium, or when it arrives after the day's results are announced. A displaced entry (recorded, then out-ranked by a straggler with an earlier `ts` during the grace window) is not retroactively clowned; it simply gets no medal.
 
 Key points:
 - Podium calculation:

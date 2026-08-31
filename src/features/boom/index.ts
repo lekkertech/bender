@@ -29,6 +29,14 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
  */
 const ANNOUNCE_BACKFILL_DAYS = 2;
 
+/**
+ * Delay between a full house and the podium announcement. Slack delivers events out of ts order
+ * (2026-08-31: a 3rd-by-ts entry arrived after the 4th had filled the podium), so announcing the
+ * instant the podium fills can lock in the wrong bronze. The grace window lets stragglers land
+ * and be re-ranked by ts before results go out.
+ */
+const DEFAULT_ANNOUNCE_GRACE_MS = 15_000;
+
 function inAllowedChannel(cfg: Config, channel?: string): boolean {
   if (!cfg.allowedChannels) return true;
   return channel ? cfg.allowedChannels.has(channel) : false;
@@ -37,12 +45,29 @@ function inAllowedChannel(cfg: Config, channel?: string): boolean {
 export function registerBoomFeature(app: App, cfg: Config) {
   const db = new Store();
 
+  const announceGraceMs = Number(process.env.BOOM_ANNOUNCE_GRACE_MS ?? DEFAULT_ANNOUNCE_GRACE_MS);
+
   // Dates whose announcement is mid-flight, so a second message arriving during an await cannot
   // post the podium twice.
   const announcing = new Set<string>();
 
+  // Pending grace timers per date, so a full house schedules exactly one announcement.
+  const announceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   // Dates already told "Boom isn't played today", so a busy weekend gets one reply, not one per post.
   const notPlayedNotified = new Set<string>();
+
+  /** Announce after the grace window, so out-of-order stragglers can still claim their place. */
+  function scheduleAnnounce(client: any, date: string, channel: string, logger?: any) {
+    if (announceGraceMs <= 0) return announceDay(client, date, channel);
+    if (announceTimers.has(date)) return;
+    const t = setTimeout(() => {
+      announceTimers.delete(date);
+      announceDay(client, date, channel).catch((err) => logger?.error?.(err));
+    }, announceGraceMs);
+    (t as any).unref?.();
+    announceTimers.set(date, t);
+  }
 
   /** Post a day's podium once. The first completed run marks the day announced. */
   async function announceDay(client: any, date: string, channel: string) {
@@ -200,37 +225,45 @@ export function registerBoomFeature(app: App, cfg: Config) {
         return;
       }
 
-      // Clown a game emoji once its own podium is full, or once the day is already decided.
-      // Posts outside the window returned above, so the window is not re-checked here.
-      const gameClosed = anyEmoji ? db.placementsCount(date, anyEmoji) >= 3 : false;
-      const dayClosed =
-        db.hasDailyAnnounced(date) || neededGames.every((g) => db.placementsCount(date, g) >= 3);
-      if (anyEmoji && (gameClosed || dayClosed)) {
-        try {
-          await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: 'clown_face' });
-        } catch {}
-        return;
-      }
       if (!inWindow) return;
 
       // Determine game by exact single-emoji message
       const game = detectGameFromMessage((m.text || ''), weekday);
       if (!game) return;
 
-      // Count this valid emoji occurrence
-      db.incrementCount(date, game);
+      // Once the day is announced, results are final: clown without recording.
+      if (anyEmoji && db.hasDailyAnnounced(date)) {
+        try {
+          await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: 'clown_face' });
+        } catch {}
+        return;
+      }
 
-      // Podium placements 1st/2nd/3rd (unique users). After 3, further posts are clowned above.
-      // Pass Slack message timestamp so placements are decided by earliest ts, not arrival order.
+      // Record BEFORE judging. Slack delivers events out of ts order, so a full-looking podium
+      // may still owe a place to this message (2026-08-31: the true 3rd arrived after the 4th
+      // and was clowned off the podium). The settled podium re-ranks by ts only over recorded
+      // messages, so the recording must come first.
       // Position reactions (medals) are deferred to announce time so out-of-order WebSocket
       // delivery cannot mis-tag the winners.
       db.addPlacement(date, game, m.user, tsStr, m.channel);
 
-      // Full house: announce straight away rather than waiting for the window to close. Gate on
-      // SETTLED podium count (unique earliest-ts finishers), not the raw running tally, which can
-      // reach 3 via re-posts before 3 unique finishers have settled.
+      // Clown only a message that holds no place on the settled podium: a 4th-or-later unique
+      // user. A podium user's re-post is not clowned; it simply doesn't score again.
+      if (!db.getPlacements(date, game).includes(m.user)) {
+        try {
+          await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: 'clown_face' });
+        } catch {}
+        return;
+      }
+
+      // Count this valid emoji occurrence
+      db.incrementCount(date, game);
+
+      // Full house: schedule the announcement after the grace window rather than waiting for the
+      // window to close. Gate on SETTLED podium count (unique earliest-ts finishers), not the raw
+      // running tally, which can reach 3 via re-posts before 3 unique finishers have settled.
       if (neededGames.every((g) => db.placementsCount(date, g) >= 3)) {
-        await announceDay(client, date, m.channel);
+        await scheduleAnnounce(client, date, m.channel, logger);
       }
     } catch (err) {
       logger?.error?.(err);

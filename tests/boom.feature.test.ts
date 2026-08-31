@@ -112,6 +112,8 @@ beforeEach(() => {
   prevCwd = process.cwd();
   const dir = mkdtempSync(join(tmpdir(), 'boom-feature-'));
   process.chdir(dir);
+  // Announce immediately on full house; grace-window behavior is covered in boom.race.test.ts
+  process.env.BOOM_ANNOUNCE_GRACE_MS = '0';
 });
 
 afterEach(() => {
