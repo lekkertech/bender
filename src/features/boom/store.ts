@@ -3,8 +3,12 @@ import { dirname, join } from 'node:path';
 import { DateTime } from 'luxon';
 import {
   assignRandomPoints,
+  ENTRY_GRACE_MS,
   ENTRY_WINDOW_MS,
   GAMES,
+  isFriday,
+  neededGamesForDate,
+  noonWindowEndMs,
   PODIUM_WEIGHTS,
   TZ,
   weekKeyFor,
@@ -44,6 +48,10 @@ type StoreData = {
   // Presence of an array for date+game means that game is resolved and immutable.
   awards?: Record<string, Partial<Record<Game, Award[]>>>;
 
+  // When medal reactions were applied per date+game. Separate from `awards` because the awards are
+  // flushed before the reactions are sent: without this, a crash in between loses the medals.
+  medalled?: Record<string, Partial<Record<Game, string>>>;
+
   // First date scored by random point assignment. Dates strictly before this are scored with
   // the legacy 3-2-1 podium weights so historical leaderboards/crowns stay intact.
   random_scoring_from?: string;
@@ -57,6 +65,7 @@ const initialData = (): StoreData => ({
   weekly_kings: {},
   messages: {},
   awards: {},
+  medalled: {},
 });
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -89,6 +98,9 @@ function normalizeData(raw: Partial<StoreData & Record<string, unknown>>): Store
     awards: isObject((raw as any).awards)
       ? ((raw as any).awards as Record<string, Partial<Record<Game, Award[]>>>)
       : {},
+    medalled: isObject((raw as any).medalled)
+      ? ((raw as any).medalled as Record<string, Partial<Record<Game, string>>>)
+      : {},
     random_scoring_from:
       typeof (raw as any).random_scoring_from === 'string' ? ((raw as any).random_scoring_from as string) : undefined,
   };
@@ -107,6 +119,9 @@ function normalizeData(raw: Partial<StoreData & Record<string, unknown>>): Store
 
   return data;
 }
+
+/** How far back a failed results post, crown post or medal reaction is still retried. */
+const RETRY_DAYS = 2;
 
 function parseSlackTs(ts: string): number {
   // Slack ts like "1757498400.276939"
@@ -139,8 +154,14 @@ export class Store {
 
     // Stamp the random-scoring cutover on first use so every date already in the ledger keeps its
     // legacy 3-2-1 scoring and is never retroactively re-assigned random points.
+    //
+    // Deliberately *tomorrow*, not today: deploying mid-day onto a store that already holds a
+    // scored, announced day would otherwise put that date in the random era, drop its legacy
+    // 3-2-1 points out of weeklyTotals, and let the sweep re-roll it into results that contradict
+    // the podium already posted in the channel. The deploy day therefore plays out entirely under
+    // the old rules and random scoring starts at the next local midnight.
     if (!this.data.random_scoring_from) {
-      this.data.random_scoring_from = DateTime.now().setZone(TZ).toISODate()!;
+      this.data.random_scoring_from = DateTime.now().setZone(TZ).plus({ days: 1 }).toISODate()!;
       this.flush();
     }
   }
@@ -329,6 +350,37 @@ export class Store {
     return this.earliestMessagesByUser(date, game).find((m) => m.user_id === user) || null;
   }
 
+  /**
+   * Record a user's entry for a date+game, bumping the raw tally in the same step.
+   *
+   * Deliberately one synchronous call that both checks and writes: the duplicate test and the
+   * write cannot be split by an await, so no interleaving of concurrently delivered messages can
+   * land two entries (or two `counts` increments) for the same user.
+   *
+   * - `recorded`: accepted as an entrant.
+   * - `duplicate`: the user already entered this game today with a different message.
+   * - `redelivery`: this exact message is already stored (a Slack retry, not a repeat post).
+   */
+  addEntry(
+    date: string,
+    game: Game,
+    user: string,
+    ts: string,
+    channel_id: string,
+  ): 'recorded' | 'duplicate' | 'redelivery' {
+    this.ensureDay(date);
+    const prior = this.entryFor(date, game, user);
+    if (prior) return prior.message_ts === ts ? 'redelivery' : 'duplicate';
+
+    this.data.counts[date][game] = (this.data.counts[date][game] || 0) + 1;
+    (this.data.messages as any)[date][game] = [
+      ...this.getMessages(date, game),
+      { user_id: user, channel_id, message_ts: ts, created_at: DateTime.now().toISO()! } as Winner,
+    ];
+    this.flush();
+    return 'recorded';
+  }
+
   /** ms epoch of the first valid entry for a date+game — when its tally window opened. */
   windowOpenedAtMs(date: string, game: Game): number | null {
     const msgs = this.getMessages(date, game);
@@ -341,10 +393,35 @@ export class Store {
     return Number.isFinite(earliest) ? earliest * 1000 : null;
   }
 
-  /** ms epoch when the tally window for a date+game closes, or null if it never opened. */
+  /**
+   * ms epoch of the last message ts that can still enter a date+game, or null if the window never
+   * opened. Clamped to the end of the noon window: a game opened at 12:57 closes at 12:59:59.999
+   * rather than running to 13:02, where entries would be rejected as outside the noon window.
+   */
   windowClosesAtMs(date: string, game: Game): number | null {
     const opened = this.windowOpenedAtMs(date, game);
-    return opened == null ? null : opened + ENTRY_WINDOW_MS;
+    if (opened == null) return null;
+    // max() keeps the window from ever ending before it opened, for entries with an odd ts.
+    return Math.max(opened, Math.min(opened + ENTRY_WINDOW_MS, noonWindowEndMs(date)));
+  }
+
+  /**
+   * ms epoch when a date+game's points get assigned — the window close plus a short grace, so a
+   * message sent inside the window but delivered late still counts.
+   */
+  windowSettlesAtMs(date: string, game: Game): number | null {
+    const closes = this.windowClosesAtMs(date, game);
+    return closes == null ? null : closes + ENTRY_GRACE_MS;
+  }
+
+  /**
+   * True when a date is scored by random point assignment. Dates before the cutover stay on the
+   * legacy 3-2-1 podium and must never be settled — including the deploy day itself, which can
+   * already hold a scored, announced podium from the previous build.
+   */
+  isRandomEra(date: string): boolean {
+    const from = this.data.random_scoring_from;
+    return !from || date >= from;
   }
 
   /** True once points have been assigned for a date+game. Resolution is final. */
@@ -365,6 +442,7 @@ export class Store {
   resolveGame(date: string, game: Game, rng: () => number = Math.random): Award[] {
     this.ensureDay(date);
     if (this.isResolved(date, game)) return this.getAwards(date, game);
+    if (!this.isRandomEra(date)) return []; // Pre-cutover day: stays on legacy podium scoring.
 
     const entrants = this.earliestMessagesByUser(date, game);
     if (!entrants.length) return []; // Nothing to resolve; window never opened.
@@ -381,32 +459,87 @@ export class Store {
     const byDate = (this.data.awards ||= {});
     const perGame = (byDate[date] ||= {});
     perGame[game] = awards;
-    // Mark the cutover the first time a game settles, so earlier dates keep legacy 3-2-1 scoring.
-    if (!this.data.random_scoring_from) this.data.random_scoring_from = date;
     this.flush();
     return awards;
   }
 
   /**
-   * Date+game pairs that have entries and a closed tally window but no awards yet — work the
-   * in-process timers missed (e.g. the bot restarted mid-window).
+   * Date+game pairs that have entries and a settled-by deadline in the past but no awards yet —
+   * work the in-process timers missed (e.g. the bot restarted mid-window).
    */
   duePending(nowMs = Date.now()): Array<{ date: string; game: Game; channel_id: string }> {
     const out: Array<{ date: string; game: Game; channel_id: string }> = [];
-    const from = this.data.random_scoring_from;
     for (const date of Object.keys(this.data.messages || {})) {
       // Pre-cutover dates were scored under the legacy podium rules; never re-settle them.
-      if (from && date < from) continue;
+      if (!this.isRandomEra(date)) continue;
+      // A day the old build already announced (and medalled) is finished; leave it alone.
+      if (this.hasDailyAnnounced(date)) continue;
       for (const game of GAMES) {
         if (this.isResolved(date, game)) continue;
-        const closes = this.windowClosesAtMs(date, game);
-        if (closes == null || nowMs < closes) continue;
+        const settles = this.windowSettlesAtMs(date, game);
+        if (settles == null || nowMs < settles) continue;
         const first = this.earliestMessagesByUser(date, game)[0];
         if (!first) continue;
         out.push({ date, game, channel_id: first.channel_id || '' });
       }
     }
     return out;
+  }
+
+  /** True once medal reactions have been applied for a date+game. */
+  hasMedalled(date: string, game: Game): boolean {
+    return !!this.data.medalled?.[date]?.[game];
+  }
+
+  markMedalled(date: string, game: Game) {
+    const byDate = (this.data.medalled ||= {});
+    const perGame = (byDate[date] ||= {});
+    perGame[game] = DateTime.now().toISO()!;
+    this.flush();
+  }
+
+  /**
+   * Settled date+game pairs whose medal reactions never landed — the retry path for medals lost to
+   * a crash between settling and reacting, or to a failed Slack call. Bounded like
+   * pendingAnnouncements: medalling a days-old message is not worth doing.
+   */
+  pendingMedals(nowMs = Date.now()): Array<{ date: string; game: Game }> {
+    const out: Array<{ date: string; game: Game }> = [];
+    const oldest = this.oldestRetryDate(nowMs);
+    for (const date of Object.keys(this.data.awards || {})) {
+      if (date < oldest || !this.isRandomEra(date)) continue;
+      for (const game of GAMES) {
+        if (!this.isResolved(date, game) || this.hasMedalled(date, game)) continue;
+        out.push({ date, game });
+      }
+    }
+    return out;
+  }
+
+  /** Oldest date a failed post/reaction is still retried for. */
+  private oldestRetryDate(nowMs: number): string {
+    return DateTime.fromMillis(nowMs).setZone(TZ).minus({ days: RETRY_DAYS }).toISODate()!;
+  }
+
+  /**
+   * Post-cutover dates whose games have all settled but which still owe a results post or a
+   * Friday crown — the retry path for an announcement lost to a failed Slack call.
+   *
+   * Limited to the last few days: a failure old enough to fall outside that is not worth
+   * resurrecting into the channel, and the bound keeps this cheap to call on every message.
+   */
+  pendingAnnouncements(nowMs = Date.now()): string[] {
+    const out: string[] = [];
+    const oldest = this.oldestRetryDate(nowMs);
+    for (const date of Object.keys(this.data.awards || {})) {
+      if (date < oldest || !this.isRandomEra(date)) continue;
+      const owesResults = !this.hasDailyAnnounced(date);
+      const owesCrown = isFriday(date) && !this.hasCrowned(weekKeyFor(date));
+      if (!owesResults && !owesCrown) continue;
+      if (!neededGamesForDate(date).every((g) => this.isResolved(date, g))) continue;
+      out.push(date);
+    }
+    return out.sort();
   }
 
   markDailyAnnounced(date: string) {
@@ -500,8 +633,8 @@ export class Store {
     const awards = this.data.awards?.[date]?.[game];
     if (Array.isArray(awards)) return awards.map((a) => ({ user_id: a.user_id, points: a.points }));
 
-    const from = this.data.random_scoring_from;
-    if (from && date >= from) return [];
+    // Random era: settled awards are the only source, so an open window scores nothing yet.
+    if (this.isRandomEra(date)) return [];
 
     return this.computePodium(date, game).map((user_id, idx) => ({
       user_id,

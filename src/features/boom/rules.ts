@@ -22,6 +22,12 @@ export const ENTRY_WINDOW_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000;
 })();
 
+/**
+ * Settling is deferred this long past the window close so a message sent just inside the window
+ * but delivered a moment late still makes the tally instead of being clowned as too late.
+ */
+export const ENTRY_GRACE_MS = 3 * 1000;
+
 /** Colon-wrapped emoji string for each game (used in message text). */
 export const GAME_EMOJI: Record<Game, string> = {
   boom: ':boom:',
@@ -73,6 +79,11 @@ export function assignRandomPoints<T>(
   return entrants
     .map((entrant, i) => ({ entrant, points: points[i]! }))
     .sort((a, b) => b.points - a.points);
+}
+
+/** ms epoch of the last instant of the noon window (12:59:59.999 local) for a date. */
+export function noonWindowEndMs(date: string): number {
+  return DateTime.fromISO(date, { zone: TZ }).set({ hour: 12 }).endOf('hour').toMillis();
 }
 
 export function inNoonWindow(tsSeconds: number): boolean {

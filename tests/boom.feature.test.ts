@@ -1,12 +1,12 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { DateTime } from 'luxon';
 import { registerBoomFeature } from '../src/features/boom/index.ts';
+import { ENTRY_GRACE_MS, ENTRY_WINDOW_MS } from '../src/features/boom/rules.ts';
 
 type MessageHandler = (ctx: any) => Promise<void> | void;
 type EventHandler = (ctx: any) => Promise<void> | void;
 
 const ZONE = 'Africa/Johannesburg';
-const WINDOW_MS = 5 * 60 * 1000;
 
 /** Slack ts string for a local wall-clock time, with optional microseconds. */
 function toTs(iso: string, micros = 0): string {
@@ -31,15 +31,25 @@ function setupFakeApp() {
   const chatPostCalls: any[] = [];
   const usersInfoCalls: any[] = [];
 
+  // Lets a test make Slack calls fail, to exercise the retry paths. failReactionIf may return an
+  // Error to control the failure, or true for a generic one. Failed calls are not recorded.
+  const control: {
+    failIf: ((args: any) => boolean) | null;
+    failReactionIf: ((args: any) => boolean | Error) | null;
+  } = { failIf: null, failReactionIf: null };
+
   const client = {
     reactions: {
       add: async (args: any) => {
+        const fail = control.failReactionIf?.(args);
+        if (fail) throw fail instanceof Error ? fail : new Error('slack_error');
         reactionsAddCalls.push(args);
         return {};
       },
     },
     chat: {
       postMessage: async (args: any) => {
+        if (control.failIf?.(args)) throw new Error('slack_error');
         chatPostCalls.push(args);
         return { ts: '1.23' };
       },
@@ -120,21 +130,28 @@ function setupFakeApp() {
     app,
     client,
     logger,
+    control,
     triggerMessage,
     triggerEvent,
     calls: { reactionsAddCalls, chatPostCalls, usersInfoCalls },
   };
 }
 
-/** Set the clock, then register the feature so its Store stamps the right cutover date. */
+/**
+ * Register the feature the day before the game day, then jump the clock to it. The Store stamps
+ * the random-scoring cutover as the day after first boot, so this is "deployed yesterday".
+ */
 function bootAt(iso: string) {
-  vi.setSystemTime(DateTime.fromISO(iso, { zone: ZONE }).toMillis());
-  return setupFakeApp();
+  const target = DateTime.fromISO(iso, { zone: ZONE });
+  vi.setSystemTime(target.minus({ days: 1 }).set({ hour: 9, minute: 0, second: 0, millisecond: 0 }).toMillis());
+  const t = setupFakeApp();
+  vi.setSystemTime(target.toMillis());
+  return t;
 }
 
-/** Let every open tally window close (5 minutes) and its timer callbacks settle. */
+/** Let every open tally window close and settle (window + grace), running its timer callbacks. */
 async function closeWindows() {
-  await vi.advanceTimersByTimeAsync(WINDOW_MS + 1000);
+  await vi.advanceTimersByTimeAsync(ENTRY_WINDOW_MS + ENTRY_GRACE_MS + 1000);
 }
 
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -262,7 +279,7 @@ describe('Boom feature integration-like behavior', () => {
     await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:06') });
 
     // Points are only assigned once the window closes: no medals, no announcement, no awards yet.
-    await vi.advanceTimersByTimeAsync(WINDOW_MS - 10_000);
+    await vi.advanceTimersByTimeAsync(ENTRY_WINDOW_MS - 10_000);
     expect(reactions(t, 'first_place_medal')).toEqual([]);
     expect(reactions(t, 'second_place_medal')).toEqual([]);
     expect(t.calls.chatPostCalls.length).toBe(0);
@@ -409,6 +426,156 @@ describe('Boom feature integration-like behavior', () => {
     expect(acked(t)).toEqual([ts]);
     expect(clowned(t)).toEqual([]);
     expect(readStore().counts['2025-03-03'].boom).toBe(1);
+  });
+
+  it('accepts an entry sent inside the window but delivered during the grace period', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    const firstTs = toTs('2025-03-03T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: firstTs });
+
+    // Sent 12:04:59 (inside the window, which closes 12:05:00), delivered 12:05:02 — settling is
+    // deferred to 12:05:03, so the entry still counts instead of being clowned as too late.
+    const graceTs = toTs('2025-03-03T12:04:59');
+    await t.triggerMessage({
+      text: ':boom:',
+      user: 'U2',
+      channel: 'C1',
+      ts: graceTs,
+      at: toTs('2025-03-03T12:05:02'),
+    });
+    expect(acked(t)).toEqual([firstTs, graceTs]);
+    expect(clowned(t)).toEqual([]);
+
+    // Delivered after settling, points are already assigned: unavoidably too late
+    const tooLateTs = toTs('2025-03-03T12:04:58');
+    await t.triggerMessage({
+      text: ':boom:',
+      user: 'U3',
+      channel: 'C1',
+      ts: tooLateTs,
+      at: toTs('2025-03-03T12:20:00'),
+    });
+    expect(clowned(t)).toEqual([tooLateTs]);
+
+    const boom = readStore().awards['2025-03-03'].boom;
+    expect(boom.map((a: any) => a.user_id).sort()).toEqual(['U1', 'U2']);
+    expect(boom.map((a: any) => a.points).sort()).toEqual([1, 2]);
+  });
+
+  it('clamps the tally window to the end of the noon window', async () => {
+    const t = bootAt('2025-03-03T12:57:00');
+    const firstTs = toTs('2025-03-03T12:57:00');
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: firstTs });
+
+    // A plain 5 minutes would run to 13:02, where entries are rejected as outside the noon
+    // window. Clamped to 12:59:59.999, so this is the last entry that can join.
+    const lastTs = toTs('2025-03-03T12:59:30');
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: lastTs });
+    expect(acked(t)).toEqual([firstTs, lastTs]);
+
+    // Past the noon window: clowned, and the settled tally holds only the two in-window entrants
+    const outsideTs = toTs('2025-03-03T13:00:30');
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: outsideTs });
+    expect(clowned(t)).toEqual([outsideTs]);
+
+    await closeWindows();
+    const hadeda = readStore().awards['2025-03-03'].hadeda;
+    expect(hadeda.map((a: any) => a.user_id).sort()).toEqual(['U1', 'U2']);
+  });
+
+  it('retries a daily announcement lost to a failed Slack post', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:00') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:01') });
+
+    let failures = 1;
+    t.control.failIf = () => failures-- > 0;
+    await closeWindows();
+
+    // Points are settled, but the results post failed and must not be marked announced
+    expect(readStore().awards['2025-03-03'].boom.length).toBe(1);
+    expect(postsMatching(t, 'Daily Podium').length).toBe(0);
+    expect(readStore().daily_announced['2025-03-03']).toBeUndefined();
+
+    // The next message drives the catch-up, which retries the announcement
+    await t.triggerMessage({ text: 'hello', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:40:00') });
+    expect(postsMatching(t, 'Daily Podium').length).toBe(1);
+    expect(readStore().daily_announced['2025-03-03']).toBeDefined();
+  });
+
+  it('retries medal reactions lost to a failed Slack call', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    const boomTs = toTs('2025-03-03T12:00:00');
+    const hadedaTs = toTs('2025-03-03T12:00:01');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: boomTs });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: hadedaTs });
+
+    // Both games' medals fail as they settle. Points are already flushed at that moment, so
+    // without a retry the medals would be lost for good.
+    let medalFailures = 2;
+    t.control.failReactionIf = (args: any) => String(args.name).endsWith('_place_medal') && medalFailures-- > 0;
+    await closeWindows();
+
+    expect(reactions(t, 'first_place_medal')).toEqual([]);
+    expect(readStore().medalled['2025-03-03']).toBeUndefined();
+    // The day itself is settled and announced regardless
+    expect(postsMatching(t, 'Daily Podium').length).toBe(1);
+
+    // The next message retries just the medals
+    await t.triggerMessage({ text: 'hello', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:40:00') });
+    expect(reactions(t, 'first_place_medal').map((r) => r.timestamp).sort()).toEqual([boomTs, hadedaTs].sort());
+    expect(readStore().medalled['2025-03-03']).toEqual({
+      boom: expect.any(String),
+      hadeda: expect.any(String),
+    });
+    expect(postsMatching(t, 'Daily Podium').length).toBe(1);
+
+    // Once marked, they are never re-applied
+    await t.triggerMessage({ text: 'hello again', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:45:00') });
+    expect(reactions(t, 'first_place_medal').length).toBe(2);
+  });
+
+  it('treats a medal that is already on the message as applied', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:00') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:01') });
+
+    // Slack rejects a reaction that is already there; that must not loop forever as a "failure"
+    const alreadyReacted: any = new Error('An API error occurred: already_reacted');
+    alreadyReacted.data = { ok: false, error: 'already_reacted' };
+    t.control.failReactionIf = (args: any) =>
+      String(args.name).endsWith('_place_medal') ? alreadyReacted : false;
+    await closeWindows();
+
+    expect(readStore().medalled['2025-03-03']).toEqual({
+      boom: expect.any(String),
+      hadeda: expect.any(String),
+    });
+  });
+
+  it('retries a lost Friday crown without re-posting the daily results', async () => {
+    const t = bootAt('2025-03-07T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-07T12:00:00') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-07T12:00:01') });
+
+    // Only the crown post fails, and only once
+    let crownFailures = 1;
+    t.control.failIf = (args: any) => String(args.text).includes('Weekly Crown') && crownFailures-- > 0;
+    await closeWindows();
+
+    expect(postsMatching(t, 'Daily Podium').length).toBe(1);
+    expect(postsMatching(t, 'Weekly Crown').length).toBe(0);
+    expect(readStore().weekly_crowned['2025-W10']).toBeUndefined();
+    // And no persisted record of a crown nobody saw
+    expect(readStore().weekly_kings['2025-W10']).toBeUndefined();
+
+    await t.triggerMessage({ text: 'hello', user: 'U9', channel: 'C1', ts: toTs('2025-03-07T12:40:00') });
+
+    // The crown is retried on its own; the already-posted results are not repeated
+    expect(postsMatching(t, 'Weekly Crown').length).toBe(1);
+    expect(postsMatching(t, 'Daily Podium').length).toBe(1);
+    expect(readStore().weekly_crowned['2025-W10']).toBeDefined();
+    expect(readStore().weekly_kings['2025-W10']).toMatchObject({ winners: expect.any(Array) });
   });
 
   it('counts out-of-order deliveries that arrive inside the window', async () => {

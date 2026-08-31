@@ -23,6 +23,11 @@ const ACK_REACTION = 'white_check_mark';
 /** How often to sweep for tally windows whose timers were lost to a restart. */
 const SWEEP_INTERVAL_MS = 30 * 1000;
 
+/** Slack rejects adding a reaction that is already present; for us that is success. */
+function isAlreadyReacted(err: any): boolean {
+  return err?.data?.error === 'already_reacted' || err?.message === 'already_reacted';
+}
+
 function inAllowedChannel(cfg: Config, channel?: string): boolean {
   if (!cfg.allowedChannels) return true;
   return channel ? cfg.allowedChannels.has(channel) : false;
@@ -31,29 +36,29 @@ function inAllowedChannel(cfg: Config, channel?: string): boolean {
 export function registerBoomFeature(app: App, cfg: Config) {
   const db = new Store();
 
-  // Pending tally windows: "<date>:<game>" -> the timer that will close it, plus the close time
+  // Pending tally windows: "<date>:<game>" -> the timer that will settle it, plus the settle time
   // it was scheduled for (an out-of-order earlier entry can move the deadline back).
-  const timers = new Map<string, { timer: ReturnType<typeof setTimeout>; closesAt: number }>();
+  const timers = new Map<string, { timer: ReturnType<typeof setTimeout>; settlesAt: number }>();
 
   // Dates whose announcement is mid-flight, so a timer firing during an await cannot double-post.
   const announcing = new Set<string>();
 
-  /** Schedule (or reschedule) the close of a game's 5-minute tally window. */
+  /** Schedule (or reschedule) the settling of a game's tally window. */
   function scheduleClose(client: any, date: string, game: Game, logger?: any) {
-    const closesAt = db.windowClosesAtMs(date, game);
-    if (closesAt == null || db.isResolved(date, game)) return;
+    const settlesAt = db.windowSettlesAtMs(date, game);
+    if (settlesAt == null || db.isResolved(date, game) || !db.isRandomEra(date)) return;
     const key = `${date}:${game}`;
     const existing = timers.get(key);
     if (existing) {
-      if (existing.closesAt <= closesAt) return; // Already scheduled at or before this deadline
+      if (existing.settlesAt <= settlesAt) return; // Already scheduled at or before this deadline
       clearTimeout(existing.timer);
     }
     const timer = setTimeout(() => {
       timers.delete(key);
       closeGame(client, date, game, logger).catch((err) => logger?.error?.(err));
-    }, Math.max(0, closesAt - Date.now()));
+    }, Math.max(0, settlesAt - Date.now()));
     timer.unref?.();
-    timers.set(key, { timer, closesAt });
+    timers.set(key, { timer, settlesAt });
   }
 
   /** Assign points for a game whose window has closed, then announce the day if it is complete. */
@@ -64,30 +69,50 @@ export function registerBoomFeature(app: App, cfg: Config) {
       timers.delete(`${date}:${game}`);
     }
 
-    const alreadySettled = db.isResolved(date, game);
-    const awards = db.resolveGame(date, game);
-
-    // Medals go to the three biggest point earners, applied to their entry messages. Skipped when
-    // the game was already settled, so repeat calls never re-react.
-    if (!alreadySettled) {
-      for (let i = 0; i < Math.min(PODIUM_MEDALS.length, awards.length); i++) {
-        const medal = PODIUM_MEDALS[i];
-        const a = awards[i];
-        if (!medal || !a.channel_id || !a.message_ts) continue;
-        try {
-          await client.reactions.add({ channel: a.channel_id, timestamp: a.message_ts, name: medal });
-        } catch {}
-      }
-    }
-
+    db.resolveGame(date, game);
+    await applyMedals(client, date, game, logger);
     await announceDay(client, date, logger);
   }
 
   /**
-   * Close any window whose deadline has passed without its timer firing (bot restart, long
-   * event-loop stall). Channels come from the stored entries, so no live message is needed.
+   * Medal the three biggest point earners of a settled game, on their own entry messages.
+   *
+   * Marked done in the store only once every reaction has landed, because the awards are flushed
+   * before these calls are made: a crash or a Slack failure in between would otherwise lose the
+   * medals for good. Retried by the next catch-up until they stick.
    */
-  async function closeDueWindows(client: any, logger?: any) {
+  async function applyMedals(client: any, date: string, game: Game, logger?: any) {
+    if (db.hasMedalled(date, game)) return;
+    const awards = db.getAwards(date, game);
+    if (!awards.length) return;
+
+    let failed = false;
+    for (let i = 0; i < Math.min(PODIUM_MEDALS.length, awards.length); i++) {
+      const medal = PODIUM_MEDALS[i];
+      const a = awards[i];
+      if (!medal || !a.channel_id || !a.message_ts) continue;
+      try {
+        await client.reactions.add({ channel: a.channel_id, timestamp: a.message_ts, name: medal });
+      } catch (err) {
+        // A medal already on the message is the outcome we wanted; anything else is a real failure.
+        if (isAlreadyReacted(err)) continue;
+        failed = true;
+        logger?.warn?.({ date, game, medal, err }, '[boom] failed to apply medal reaction');
+      }
+    }
+    if (!failed) db.markMedalled(date, game);
+  }
+
+  /**
+   * Settle any window whose deadline has passed without its timer firing (bot restart, long
+   * event-loop stall) and retry any announcement a failed Slack call lost. Channels come from the
+   * stored entries, so no live message is needed.
+   */
+  async function catchUp(client: any, logger?: any) {
+    // Snapshot before settling: games settled in this pass get their medals from closeGame, so
+    // this list is only the ones orphaned by an earlier crash or Slack failure.
+    const orphanedMedals = db.pendingMedals();
+
     for (const p of db.duePending()) {
       try {
         await closeGame(client, p.date, p.game, logger);
@@ -95,13 +120,37 @@ export function registerBoomFeature(app: App, cfg: Config) {
         logger?.error?.(err);
       }
     }
+    for (const p of orphanedMedals) {
+      try {
+        await applyMedals(client, p.date, p.game, logger);
+      } catch (err) {
+        logger?.error?.(err);
+      }
+    }
+    // A day can be fully settled yet unannounced: awards are flushed before the post, so a
+    // transient chat.postMessage failure would otherwise drop the results and crown for good.
+    for (const date of db.pendingAnnouncements()) {
+      try {
+        await announceDay(client, date, logger);
+      } catch (err) {
+        logger?.error?.(err);
+      }
+    }
   }
 
-  /** Post the daily results + week-to-date leaderboard once every needed game has settled. */
+  /**
+   * Post the daily results + week-to-date leaderboard once every needed game has settled, then the
+   * Friday crown. Each post is marked done only after Slack accepts it, so a failure leaves the
+   * work outstanding for the next catch-up rather than silently skipping the day.
+   */
   async function announceDay(client: any, date: string, logger?: any) {
     const neededGames = neededGamesForDate(date);
     if (!neededGames.every((g) => db.isResolved(date, g))) return;
-    if (db.hasDailyAnnounced(date) || announcing.has(date)) return;
+
+    const weekKey = weekKeyFor(date);
+    const owesResults = !db.hasDailyAnnounced(date);
+    const owesCrown = isFriday(date) && !db.hasCrowned(weekKey);
+    if ((!owesResults && !owesCrown) || announcing.has(date)) return;
 
     // Announce in the channel the day's earliest entry came from.
     const channel = neededGames
@@ -114,7 +163,12 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
     announcing.add(date);
     try {
-      await postDailyResults(client, date, channel, neededGames);
+      if (owesResults) {
+        await postDailyResults(client, date, channel, neededGames);
+        db.markDailyAnnounced(date);
+      }
+      // Crown after the daily results, using the same complete weeklyTotals.
+      if (owesCrown) await postWeeklyCrown(client, date, channel);
     } finally {
       announcing.delete(date);
     }
@@ -152,35 +206,36 @@ export function registerBoomFeature(app: App, cfg: Config) {
     }
 
     await client.chat.postMessage({ channel, text: lines.join('\n') });
-    db.markDailyAnnounced(date);
-
-    // Friday crown: only once every Friday game has settled, so the crown uses the same complete
-    // weeklyTotals as the results above. Posted after the daily results message.
-    if (isFriday(date)) {
-      const wk = weekKeyFor(date);
-      if (!db.hasCrowned(wk)) {
-        const board = db.weeklyTotals(start, end);
-        if (board.length) {
-          const topPoints = board[0].points;
-          const winners = board.filter((r) => r.points === topPoints).map((r) => r.user_id);
-          db.setCrown(wk, winners, topPoints);
-          const crownLines = [
-            `👑 Boom Game — Weekly Crown (${start} to ${end})`,
-            `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
-          ];
-          await client.chat.postMessage({ channel, text: crownLines.join('\n') });
-        }
-        db.markCrowned(wk);
-      }
-    }
   }
 
-  // Recover windows abandoned by a restart even if the channel goes quiet. app.client is absent
-  // in unit-test harnesses, where closeDueWindows is driven by incoming messages instead.
+  async function postWeeklyCrown(client: any, date: string, channel: string) {
+    const wk = weekKeyFor(date);
+    const { start, end } = weekStartEnd(date);
+    const board = db.weeklyTotals(start, end);
+    if (board.length) {
+      const topPoints = board[0].points;
+      const winners = board.filter((r) => r.points === topPoints).map((r) => r.user_id);
+      const crownLines = [
+        `👑 Boom Game — Weekly Crown (${start} to ${end})`,
+        `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
+      ];
+      // Persist only after Slack accepts the post, so a failure leaves no record of a crown
+      // nobody saw — the next catch-up retries it.
+      await client.chat.postMessage({ channel, text: crownLines.join('\n') });
+      db.setCrown(wk, winners, topPoints);
+    }
+    db.markCrowned(wk);
+  }
+
+  // Recover windows abandoned by a restart, and retry lost announcements, even if the channel goes
+  // quiet. app.client is absent in unit-test harnesses, where catchUp is driven by incoming
+  // messages instead. app.logger is passed through: this is the path most likely to hit a missing
+  // channel or a Slack failure, so it must not fail silently.
   const sweepClient = (app as any).client;
+  const sweepLogger = (app as any).logger;
   if (sweepClient) {
     const sweep = setInterval(() => {
-      closeDueWindows(sweepClient).catch(() => {});
+      catchUp(sweepClient, sweepLogger).catch((err) => sweepLogger?.error?.(err));
     }, SWEEP_INTERVAL_MS);
     sweep.unref?.();
   }
@@ -200,8 +255,9 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const inWindow = inNoonWindow(tsSeconds);
       const neededGames = neededGamesForDate(date);
 
-      // Settle any window whose deadline passed while no timer was live (e.g. after a restart).
-      await closeDueWindows(client, logger);
+      // Settle any window whose deadline passed while no timer was live (e.g. after a restart) and
+      // retry any announcement that was lost to a failed Slack call.
+      await catchUp(client, logger);
 
       // If a game emoji is posted outside the window, add a clown reaction.
       // (Do this before any store reads/writes so we never mutate state on non-workdays.)
@@ -222,24 +278,25 @@ export function registerBoomFeature(app: App, cfg: Config) {
         return;
       }
 
-      // Clown any game emoji posted outside the window, after its own tally window has closed,
-      // once every game for the day has settled, or when the user already has an entry.
-      const closesAt = anyEmoji ? db.windowClosesAtMs(date, anyEmoji) : null;
-      // Compare on the message's own ts (full sub-second precision) so a slow delivery of a
-      // message that was sent inside the window still counts.
-      const tsMs = Math.round(Number(tsStr) * 1000);
-      const tooLate = closesAt != null && Number.isFinite(tsMs) && tsMs > closesAt;
-      const gameClosed = anyEmoji ? db.isResolved(date, anyEmoji) || tooLate : false;
-      const dayClosed = neededGames.every((g) => db.isResolved(date, g));
-      // One entry per user per game: repeats are ignored entirely, not even counted. A redelivery
-      // of the already-recorded message is a Slack retry, not a repeat post — drop it silently.
-      const priorEntry = anyEmoji ? db.entryFor(date, anyEmoji, m.user) : null;
-      if (priorEntry && priorEntry.message_ts === tsStr) return;
-      const duplicate = priorEntry != null;
-      if (anyEmoji && (!inWindow || gameClosed || dayClosed || duplicate)) {
+      const clown = async () => {
         try {
           await client.reactions.add({ channel: m.channel, timestamp: tsStr, name: 'clown_face' });
         } catch {}
+      };
+
+      // Clown any game emoji posted after its own tally window has closed or once every game for
+      // the day has settled. Lateness is judged on the message's own ts (full sub-second
+      // precision), and settling is deferred by ENTRY_GRACE_MS, so a message sent inside the
+      // window but delivered a moment late is still accepted rather than clowned.
+      const closesAt = anyEmoji ? db.windowClosesAtMs(date, anyEmoji) : null;
+      // floor(), not round(): rounding up would push a ts in the final half-millisecond of the
+      // noon window past the clamped close and clown a message that was sent in time.
+      const tsMs = Math.floor(Number(tsStr) * 1000);
+      const tooLate = closesAt != null && Number.isFinite(tsMs) && tsMs > closesAt;
+      const gameClosed = anyEmoji ? db.isResolved(date, anyEmoji) || tooLate : false;
+      const dayClosed = neededGames.every((g) => db.isResolved(date, g));
+      if (anyEmoji && (!inWindow || gameClosed || dayClosed)) {
+        await clown();
         return;
       }
       if (!inWindow) return;
@@ -248,15 +305,20 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const game = detectGameFromMessage((m.text || ''), weekday);
       if (!game) return;
 
-      // Count this valid emoji occurrence. Repeats were clowned above, so counts track entrants.
-      db.incrementCount(date, game);
-
-      // Record the entry. Pass the Slack message timestamp so the tally window is anchored to the
-      // earliest entry rather than WebSocket arrival order.
-      db.addPlacement(date, game, m.user, tsStr, m.channel);
+      // Record the entry and bump the raw tally in one atomic store call, so concurrently
+      // delivered messages from the same user cannot both be counted. The Slack message ts is
+      // stored, anchoring the tally window to the earliest entry rather than arrival order.
+      const outcome = db.addEntry(date, game, m.user, tsStr, m.channel);
+      // A redelivery of the already-recorded message is a Slack retry, not a repeat post.
+      if (outcome === 'redelivery') return;
+      // One entry per user per game: repeats are ignored entirely, not even counted.
+      if (outcome === 'duplicate') {
+        await clown();
+        return;
+      }
 
       // The first entry opens a tally window; every unique entrant inside it draws a unique random
-      // point value in 1..n when it closes. Medals and the daily announcement follow from there.
+      // point value in 1..n when it settles. Medals and the daily announcement follow from there.
       scheduleClose(client, date, game, logger);
 
       // Acknowledge the accepted entry so the player knows they are in the tally.
@@ -288,7 +350,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const { start, end } = weekStartEnd(date);
 
       // Settle any closed-but-unresolved window first so the leaderboard reflects today's results.
-      await closeDueWindows(client, logger);
+      await catchUp(client, logger);
 
       // Compute week-to-date leaderboard and render nicely via Block Kit (reply in-channel, not thread)
       const leaderboard = db.weeklyTotals(start, end);

@@ -5,7 +5,7 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
 ## Features
 - Boom Game module (isolated):
   - Detect single-emoji messages in `#capetown` between 12:00:00–12:59:59
-  - Each emoji opens its own 5-minute tally window on its first valid entry; every unique entrant inside the window is counted
+  - Each emoji opens its own 5-minute tally window on its first valid entry (never running past 12:59:59); every unique entrant inside the window is counted
   - One entry per player per emoji: accepted entries get a :white_check_mark: reaction to confirm they are in the tally
   - When the window closes, the `n` entrants each draw a unique random amount between 1 and `n` (3 people sending :boom: split 3/2/1 in random order; 9 people sending :hadeda-boom: split 9…1)
   - Post the daily results + week-to-date leaderboard once every game for the day has settled; medals go to the three biggest point earners

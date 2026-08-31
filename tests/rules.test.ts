@@ -4,10 +4,12 @@ import {
   assignRandomPoints,
   detectGameFromMessage,
   detectAnyGameEmoji,
+  ENTRY_GRACE_MS,
   ENTRY_WINDOW_MS,
   inNoonWindow,
   localDayInfo,
   neededGamesForDate,
+  noonWindowEndMs,
   weekKeyFor,
   isFriday,
   weekStartEnd,
@@ -94,8 +96,18 @@ describe('rules.ts basics', () => {
     expect(neededGamesForDate('2025-03-07')).toEqual(['boom', 'hadeda']); // Fri
   });
 
-  it('the tally window defaults to 5 minutes', () => {
+  it('the tally window defaults to 5 minutes, settling a few seconds later', () => {
     expect(ENTRY_WINDOW_MS).toBe(5 * 60 * 1000);
+    // Non-zero, or a message sent inside the window but delivered late could never be accepted
+    expect(ENTRY_GRACE_MS).toBeGreaterThan(0);
+  });
+
+  it('noonWindowEndMs is the last instant of the local noon window', () => {
+    const end = noonWindowEndMs('2025-03-03');
+    expect(DateTime.fromMillis(end, { zone: ZONE }).toISO()).toBe('2025-03-03T12:59:59.999+02:00');
+    // One millisecond later is outside the window that inNoonWindow accepts
+    expect(inNoonWindow(Math.floor((end + 1) / 1000))).toBe(false);
+    expect(inNoonWindow(Math.floor(end / 1000))).toBe(true);
   });
 });
 

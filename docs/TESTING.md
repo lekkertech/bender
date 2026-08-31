@@ -30,7 +30,9 @@ Strategies and checklists to validate your Slack bot.
   - Outside window, after a game's window closed, or after the day is closed: bot adds `:clown_face:` reaction and awards nothing.
   - Daily results auto-post once every required game for the day has settled.
   - Friday crown posts weekly winners right after the Friday daily results.
+  - A first entry at ~12:57 closes its window at 12:59:59 rather than 13:02, and entries at 13:00+ are clowned.
   - Restart mid-window: after restarting the bot, the pending window still settles (on the next message in the channel, or within ~30s via the background sweep).
+  - Deploy day: dates before the stamped `random_scoring_from` stay on legacy 3-2-1 scoring and are never settled or re-rolled — deploy outside 12:00–13:00 so a day in progress is not split across the two scoring rules.
   - `@bot leaderboard` prints week-to-date leaderboard with current king(s).
 - Chat module (app mentions):
   - `@bot hello there` yields an AI reply in-channel by default (threaded if `DEFAULT_REPLY_MODE=thread`).
