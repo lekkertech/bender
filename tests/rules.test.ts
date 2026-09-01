@@ -6,10 +6,12 @@ import {
   detectAnyGameEmoji,
   ENTRY_GRACE_MS,
   ENTRY_WINDOW_MS,
-  inNoonWindow,
+  inEntryWindow,
   localDayInfo,
   neededGamesForDate,
-  noonWindowEndMs,
+  windowClosesAtMs,
+  windowOpensAtMs,
+  windowSettlesAtMs,
   weekKeyFor,
   isFriday,
   weekStartEnd,
@@ -44,16 +46,15 @@ describe('rules.ts basics', () => {
     expect(detectAnyGameEmoji('something else')).toBeNull();
   });
 
-  it('inNoonWindow only true during 12:00 hour local', () => {
-    const before = toSec('2025-03-03T11:59:59');
-    const atNoon = toSec('2025-03-03T12:00:00');
-    const nearEnd = toSec('2025-03-03T12:59:59');
-    const after = toSec('2025-03-03T13:00:00');
-
-    expect(inNoonWindow(before)).toBe(false);
-    expect(inNoonWindow(atNoon)).toBe(true);
-    expect(inNoonWindow(nearEnd)).toBe(true);
-    expect(inNoonWindow(after)).toBe(false);
+  it('inEntryWindow accepts only 12:00:00 to 12:04:59 local', () => {
+    // The window is fixed: it opens at noon whether or not anyone posts, and shuts 5 minutes on.
+    expect(inEntryWindow(toSec('2025-03-03T11:59:59'))).toBe(false);
+    expect(inEntryWindow(toSec('2025-03-03T12:00:00'))).toBe(true);
+    expect(inEntryWindow(toSec('2025-03-03T12:04:59'))).toBe(true);
+    expect(inEntryWindow(toSec('2025-03-03T12:05:00'))).toBe(false);
+    // Being merely inside the noon hour is no longer enough.
+    expect(inEntryWindow(toSec('2025-03-03T12:30:00'))).toBe(false);
+    expect(inEntryWindow(toSec('2025-03-03T12:59:59'))).toBe(false);
   });
 
   it('localDayInfo gives ISO weekday and workday flags', () => {
@@ -96,18 +97,21 @@ describe('rules.ts basics', () => {
     expect(neededGamesForDate('2025-03-07')).toEqual(['boom', 'hadeda']); // Fri
   });
 
-  it('the tally window defaults to 5 minutes, settling a few seconds later', () => {
+  it('the entry window is 5 minutes, settling 5 seconds later', () => {
     expect(ENTRY_WINDOW_MS).toBe(5 * 60 * 1000);
-    // Non-zero, or a message sent inside the window but delivered late could never be accepted
-    expect(ENTRY_GRACE_MS).toBeGreaterThan(0);
+    expect(ENTRY_GRACE_MS).toBe(5 * 1000);
   });
 
-  it('noonWindowEndMs is the last instant of the local noon window', () => {
-    const end = noonWindowEndMs('2025-03-03');
-    expect(DateTime.fromMillis(end, { zone: ZONE }).toISO()).toBe('2025-03-03T12:59:59.999+02:00');
-    // One millisecond later is outside the window that inNoonWindow accepts
-    expect(inNoonWindow(Math.floor((end + 1) / 1000))).toBe(false);
-    expect(inNoonWindow(Math.floor(end / 1000))).toBe(true);
+  it('the window runs 12:00:00 to 12:05:00 local and settles at 12:05:05', () => {
+    const iso = (ms: number) => DateTime.fromMillis(ms, { zone: ZONE }).toISO();
+    expect(iso(windowOpensAtMs('2025-03-03'))).toBe('2025-03-03T12:00:00.000+02:00');
+    expect(iso(windowClosesAtMs('2025-03-03'))).toBe('2025-03-03T12:05:00.000+02:00');
+    expect(iso(windowSettlesAtMs('2025-03-03'))).toBe('2025-03-03T12:05:05.000+02:00');
+
+    // The close is exclusive: the last instant that still counts is one ms before it.
+    const close = windowClosesAtMs('2025-03-03');
+    expect(inEntryWindow((close - 1) / 1000)).toBe(true);
+    expect(inEntryWindow(close / 1000)).toBe(false);
   });
 });
 

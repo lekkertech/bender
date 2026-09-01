@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DateTime } from 'luxon';
 import { Store } from '../src/features/boom/store.ts';
-import { ENTRY_GRACE_MS, ENTRY_WINDOW_MS, noonWindowEndMs } from '../src/features/boom/rules.ts';
+import { windowClosesAtMs, windowOpensAtMs, windowSettlesAtMs } from '../src/features/boom/rules.ts';
 
 const ZONE = 'Africa/Johannesburg';
 
@@ -21,14 +21,20 @@ function withStore<T>(fn: (store: Store, dir: string) => T): T {
 
 /**
  * Boot a Store at a fixed instant, then run at another, so the random-scoring cutover (stamped as
- * the day after first boot) is predictable.
+ * the boot date, or the day after when that date's results are already out) is predictable.
+ * `seed` is written to the store file before construction, to boot onto an existing ledger.
  */
-function withStoreAt<T>(bootIso: string, nowIso: string, fn: (store: Store) => T): T {
+function withStoreAt<T>(bootIso: string, nowIso: string, fn: (store: Store) => T, seed?: any): T {
   const dir = mkdtempSync(join(tmpdir(), 'boom-store-'));
+  const file = join(dir, 'data', 'store.json');
   vi.useFakeTimers();
   try {
+    if (seed) {
+      mkdirSync(join(dir, 'data'), { recursive: true });
+      writeFileSync(file, JSON.stringify(seed), 'utf8');
+    }
     vi.setSystemTime(DateTime.fromISO(bootIso, { zone: ZONE }).toMillis());
-    const store = new Store(join(dir, 'data', 'store.json'));
+    const store = new Store(file);
     vi.setSystemTime(DateTime.fromISO(nowIso, { zone: ZONE }).toMillis());
     return fn(store);
   } finally {
@@ -213,8 +219,8 @@ describe('Store', () => {
 });
 
 describe('Store random point assignment', () => {
-  // 2025-03-03T12:00:00 in Africa/Johannesburg — inside the noon window, so tally windows are not
-  // clamped by it. The store is booted the day before, putting 2025-03-03 in the random era.
+  // 2025-03-03T12:00:00 in Africa/Johannesburg — the instant the entry window opens. The store is
+  // booted the day before, putting 2025-03-03 in the random era. NOW is past settling.
   const BASE = 1740996000;
   const DAY = '2025-03-03';
   const BOOT = '2025-03-02T09:00:00';
@@ -248,15 +254,19 @@ describe('Store random point assignment', () => {
       for (const a of awards) expect(totals.get(a.user_id)).toBe(a.points);
     }));
 
-  it('scores one entrant a single point and no entrants at all', () =>
+  it('scores one entrant a single point, and settles an unplayed game empty', () =>
     inRandomEra((db) => {
       const d = DAY;
       db.addPlacement(d, 'boom', 'U1', tsAt(BASE, 0), 'C1');
       expect(db.resolveGame(d, 'boom').map((a) => a.points)).toEqual([1]);
 
-      // A game nobody entered stays unresolved rather than settling empty
-      expect(db.resolveGame(d, 'hadeda')).toEqual([]);
+      // While the window is still open, a game nobody entered stays unresolved…
+      expect(db.resolveGame(d, 'hadeda', Math.random, windowClosesAtMs(d) - 1)).toEqual([]);
       expect(db.isResolved(d, 'hadeda')).toBe(false);
+
+      // …and settles empty once the window is past settling, so the day can still announce.
+      expect(db.resolveGame(d, 'hadeda')).toEqual([]);
+      expect(db.isResolved(d, 'hadeda')).toBe(true);
     }));
 
   it('entryFor returns the entry a user already has for that day and game', () =>
@@ -308,53 +318,48 @@ describe('Store random point assignment', () => {
       expect(awards.find((a) => a.user_id === 'UA')!.message_ts).toBe(tsAt(BASE, 0.1));
     }));
 
-  it('anchors the tally window on the earliest entry and settles after a grace period', () =>
+  it('holds the window fixed at 12:00-12:05 whatever the entries look like', () =>
     inRandomEra((db) => {
       const d = DAY;
+      // The window does not move to meet the first entry, and does not stretch for a late one.
+      expect(windowOpensAtMs(d)).toBe(BASE * 1000);
+      expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 5 * 60 * 1000);
+      expect(windowSettlesAtMs(d)).toBe(windowClosesAtMs(d) + 5 * 1000);
+
       db.addPlacement(d, 'boom', 'U1', tsAt(BASE, 30), 'C1');
-      expect(db.windowClosesAtMs(d, 'boom')).toBe((BASE + 30) * 1000 + ENTRY_WINDOW_MS);
-      expect(db.windowSettlesAtMs(d, 'boom')).toBe((BASE + 30) * 1000 + ENTRY_WINDOW_MS + ENTRY_GRACE_MS);
+      expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 5 * 60 * 1000);
 
-      // An out-of-order earlier entry moves the window back to the true first entry
-      db.addPlacement(d, 'boom', 'U2', tsAt(BASE, 0), 'C1');
-      expect(db.windowOpenedAtMs(d, 'boom')).toBe(BASE * 1000);
-      expect(db.windowClosesAtMs(d, 'boom')).toBe(BASE * 1000 + ENTRY_WINDOW_MS);
-
-      expect(db.windowOpenedAtMs(d, 'hadeda')).toBeNull();
-      expect(db.windowClosesAtMs(d, 'hadeda')).toBeNull();
-      expect(db.windowSettlesAtMs(d, 'hadeda')).toBeNull();
+      // A game nobody entered has exactly the same deadline as one that filled up.
+      expect(windowSettlesAtMs(d)).toBe(windowClosesAtMs(d) + 5 * 1000);
     }));
 
-  it('clamps the tally window to the end of the noon window', () =>
+  it('duePending lists every unresolved game once the window has settled', () =>
     inRandomEra((db) => {
-      const d = DAY;
-      // Opens 12:57:00: a plain 5 minutes would run to 13:02, past the noon window
-      db.addPlacement(d, 'hadeda', 'U1', tsAt(BASE, 57 * 60), 'C1');
-      expect(db.windowClosesAtMs(d, 'hadeda')).toBe(noonWindowEndMs(d));
-      expect(db.windowSettlesAtMs(d, 'hadeda')).toBe(noonWindowEndMs(d) + ENTRY_GRACE_MS);
-    }));
-
-  it('duePending lists settled-by-but-unresolved games only', () =>
-    inRandomEra((db) => {
-      // Window opened 12:00:00, so it closed at 12:05:00 and settled at 12:05:03 — before NOW
       db.addPlacement(DAY, 'boom', 'U1', tsAt(BASE, 0), 'C1');
       db.addPlacement(DAY, 'boom', 'U2', tsAt(BASE, 1), 'C1');
-      // Opened 12:09:55, still collecting at NOW
-      db.addPlacement(DAY, 'hadeda', 'U1', tsAt(BASE, 9 * 60 + 55), 'C2');
 
-      expect(db.duePending()).toEqual([{ date: DAY, game: 'boom', channel_id: 'C1' }]);
+      // Nothing is due while the window is open, nor during the grace period
+      expect(db.duePending(windowClosesAtMs(DAY) - 1)).toEqual([]);
+      expect(db.duePending(windowSettlesAtMs(DAY) - 1)).toEqual([]);
 
-      // Nothing is due during the grace period either
-      expect(db.duePending(db.windowClosesAtMs(DAY, 'boom')! + 1)).toEqual([]);
+      // Past settling, the played game and the needed game nobody entered are both due
+      expect(db.duePending()).toEqual([
+        { date: DAY, game: 'boom', channel_id: 'C1' },
+        { date: DAY, game: 'hadeda', channel_id: 'C1' },
+      ]);
 
       db.resolveGame(DAY, 'boom');
-      expect(db.duePending()).toEqual([]);
+      expect(db.duePending()).toEqual([{ date: DAY, game: 'hadeda', channel_id: 'C1' }]);
     }));
 
-  it('duePending leaves alone a day that was already announced', () =>
+  it('duePending ignores a day nobody played, and one already announced', () =>
     inRandomEra((db) => {
+      // A date with a store entry but no entrants must not settle empty games forever.
+      db.entrants(DAY, 'boom');
+      expect(db.duePending()).toEqual([]);
+
       db.addPlacement(DAY, 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      expect(db.duePending().length).toBe(1);
+      expect(db.duePending().length).toBe(2);
 
       // The previous build announced (and medalled) this day: it is finished
       db.markDailyAnnounced(DAY);
@@ -422,10 +427,44 @@ describe('Store random point assignment', () => {
       expect(db.pendingAnnouncements()).toEqual([]);
     }));
 
-  it('stamps the cutover as the day after first boot, leaving the deploy day on legacy scoring', () =>
-    withStoreAt('2025-03-03T12:30:00', '2025-03-03T12:30:00', (db) => {
-      // Deploying mid-day must not move the day already in progress into the random era: its
-      // legacy 3-2-1 podium has been scored and very likely already announced.
+  it('starts random scoring on the deploy day itself, so that day still gets scored', () =>
+    // Stamping tomorrow would strand the deploy day: it would be scored 3-2-1 but never announced,
+    // because the legacy full-house announce trigger no longer exists.
+    withStoreAt('2025-03-03T09:00:00', '2025-03-03T12:30:00', (db) => {
+      expect(db.isRandomEra('2025-03-03')).toBe(true);
+
+      db.addPlacement('2025-03-03', 'boom', 'U1', tsAt(BASE, 0), 'C1');
+      db.addPlacement('2025-03-03', 'boom', 'U2', tsAt(BASE, 1), 'C1');
+
+      expect(db.resolveGame('2025-03-03', 'boom').map((a) => a.points).sort()).toEqual([1, 2]);
+      expect(db.isResolved('2025-03-03', 'boom')).toBe(true);
+    }));
+
+  it('picks up entries already recorded when it boots mid-window', () =>
+    // Deploying at 12:03 onto a day people are already playing: those entries are in the ledger
+    // and must land in the tally rather than being stranded in the legacy era.
+    withStoreAt('2025-03-03T12:03:00', '2025-03-03T12:10:00', (db) => {
+      expect(db.isRandomEra('2025-03-03')).toBe(true);
+      expect(db.entrants('2025-03-03', 'boom').map((e) => e.user_id)).toEqual(['U1', 'U2']);
+      expect(db.resolveGame('2025-03-03', 'boom').map((a) => a.user_id).sort()).toEqual(['U1', 'U2']);
+    }, {
+      placements: { '2025-03-03': { boom: ['U1', 'U2'], hadeda: [], wednesday: [] } },
+      counts: {}, daily_announced: {}, weekly_crowned: {}, weekly_kings: {},
+      messages: {
+        '2025-03-03': {
+          boom: [
+            { user_id: 'U1', channel_id: 'C1', message_ts: tsAt(BASE, 0), created_at: '2025-03-03T12:00:00' },
+            { user_id: 'U2', channel_id: 'C1', message_ts: tsAt(BASE, 1), created_at: '2025-03-03T12:00:01' },
+          ],
+          hadeda: [], wednesday: [],
+        },
+      },
+    }));
+
+  it('defers the cutover to tomorrow when the deploy day has already been announced', () =>
+    // The one day that must not move: its 3-2-1 podium is already in the channel, so re-scoring it
+    // would drop those points out of weeklyTotals and contradict a message people have read.
+    withStoreAt('2025-03-03T13:30:00', '2025-03-03T13:30:00', (db) => {
       expect(db.isRandomEra('2025-03-03')).toBe(false);
       expect(db.isRandomEra('2025-03-04')).toBe(true);
 
@@ -433,7 +472,7 @@ describe('Store random point assignment', () => {
       db.addPlacement('2025-03-03', 'boom', 'U2', tsAt(BASE, 1), 'C1');
       db.addPlacement('2025-03-03', 'boom', 'U3', tsAt(BASE, 2), 'C1');
 
-      // The deploy day is never settled, re-rolled, or swept
+      // Never settled, re-rolled, or swept
       expect(db.resolveGame('2025-03-03', 'boom')).toEqual([]);
       expect(db.isResolved('2025-03-03', 'boom')).toBe(false);
       expect(db.duePending()).toEqual([]);
@@ -444,6 +483,9 @@ describe('Store random point assignment', () => {
       expect(totals.get('U1')).toBe(3);
       expect(totals.get('U2')).toBe(2);
       expect(totals.get('U3')).toBe(1);
+    }, {
+      placements: {}, counts: {}, weekly_crowned: {}, weekly_kings: {}, messages: {},
+      daily_announced: { '2025-03-03': '2025-03-03T13:00:00.000+02:00' },
     }));
 
   it('keeps legacy 3-2-1 scoring for dates before the random-scoring cutover', () =>

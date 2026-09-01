@@ -27,29 +27,32 @@ Day-2 operations for your Slack bot: monitoring, rotation, and recovery.
 - Roll forward strategy preferred; maintain ability to roll back a previous image.
 
 
-## Boom Game Scoring: 5-Minute Tally Windows
+## Boom Game Scoring: The 12:00-12:05 Entry Window
 
 Scoring is no longer order-based. Each game (`boom`, `hadeda`, `wednesday`) tallies everyone who
-posts its emoji, then hands out points at random.
+posts its emoji inside one fixed window, then hands out points at random.
 
-- Tally window:
-  - The first valid entry of the day for a game opens a window of `BOOM_ENTRY_WINDOW_MS` (default
-    5 minutes), anchored to that entry's Slack `ts` — not to arrival time.
-  - The close is clamped to the end of the noon window (12:59:59.999 local), so a game opened at
-    12:57 closes at 12:59:59.999 rather than running to 13:02, where entries would be rejected as
-    outside the noon window. Inside the noon window, the tally window is authoritative.
-  - Points are assigned `ENTRY_GRACE_MS` (3s) *after* the close, so a message sent just inside the
-    window but delivered a moment late still makes the tally. Eligibility is judged on the
-    message's own `ts`, so late delivery never buys extra time.
+- Entry window:
+  - The window opens at **12:00:00.000 local** and shuts `BOOM_ENTRY_WINDOW_MS` later (default
+    5 minutes, so 12:05:00.000, exclusive). It is the same window for every game and for every
+    workday, and it does not move: it opens at noon whether or not anyone posts.
+  - Nothing about the window depends on the entries. A first post at 12:04:00 gets 60 seconds of
+    tallying, not a fresh 5 minutes; a post at 11:59:59 is early and a post at 12:05:00 is late.
+  - Eligibility is decided by the message's own Slack `ts` alone — not by when the event was
+    delivered, and not by whether anyone else posted first.
+  - Points are assigned `ENTRY_GRACE_MS` (5s) *after* the close, at 12:05:05. This exists only so
+    a message sent inside the window but delivered a moment late still makes the tally; because
+    eligibility is judged on `ts`, the grace never buys anyone extra time to post.
   - One entry per user per game: the first valid post is recorded and gets a
     `:white_check_mark:` reaction to acknowledge it.
   - A repeat post by a user who already entered that game is ignored completely — no entrant, no
     `counts` increment, no stored message — and gets `:clown_face:`. `counts[date][game]`
     therefore equals the number of entrants.
-  - Entries after the window closes get `:clown_face:` and score nothing.
+  - Any game emoji outside the window — before 12:00, after 12:05, or later in the noon hour —
+    gets `:clown_face:` and scores nothing.
 - Point assignment:
-  - When the window closes, the `n` entrants are given a random permutation of `1..n`: one gets
-    `n`, another `n-1`, down to `1`. No duplicates, no gaps, no ties.
+  - When the window shuts, the `n` entrants of each game are given a random permutation of `1..n`:
+    one gets `n`, another `n-1`, down to `1`. No duplicates, no gaps, no ties.
   - The assignment is written once to `awards[date][game]` and is never re-rolled — restarts,
     re-announcements and leaderboard queries all read the same stored result.
   - Medal reactions (`:first_place_medal:` …) go to the three biggest point earners' messages.
@@ -60,43 +63,56 @@ posts its emoji, then hands out points at random.
 - Announcement:
   - Daily results post once every game required that day has settled (Wednesdays require
     `wednesday` too). The Friday crown follows the Friday results.
+  - Every game of a date settles at the same instant, so a required game nobody entered settles
+    empty at 12:05:05 and renders as `— no entries`. Without that the day's results — and, on a
+    Friday, the week's crown — would stall forever on a game nobody played. Only a date somebody
+    actually played settles at all, so a quiet workday produces no post.
   - Each post is marked done (`daily_announced`, `weekly_crowned`, and `weekly_kings` for the
     crown's winners) only after Slack accepts it. A failed post leaves the work outstanding and
     `pendingAnnouncements()` re-offers it to the next catch-up, so a transient rate-limit at 12:05
     delays the results instead of dropping them. The results post and the crown retry
     independently — a lost crown never re-posts the results, and leaves no record of a crown nobody
-    saw. Retries (results, crown, medals) are limited to the last 2 days, so an older failure is not
-    resurrected into the channel.
+    saw.
+  - Announcing is bounded to the last 2 days (`isWithinRetryWindow`), and the gate sits in
+    `announceDay` itself rather than only in the retry sweep — otherwise a restart after a long
+    outage would settle a weeks-old day and post its podium into the channel. Such a day still
+    settles, so its scores are right; it just never announces.
 - Timers and recovery:
-  - Windows are settled by an in-process timer. If the bot restarts mid-window, the window is
-    settled by a background sweep (every 30s) or by the next message in the channel, using the
-    channel recorded with the entries. The sweep runs with `app.logger`, so failures on this path
-    are logged rather than swallowed.
+  - The window is settled by a single in-process timer per date, armed by the first recorded entry.
+    If the bot restarts mid-window, the date is settled instead by a background sweep (every 30s)
+    or by the next message in the channel, using the channel recorded with the entries. The sweep
+    runs with `app.logger`, so failures on this path are logged rather than swallowed.
 - Migration:
-  - On first start, the Store stamps `random_scoring_from` with the local date *after* today. The
-    deploy day and everything before it keep legacy 3-2-1 podium scoring, so historical
-    leaderboards and crowns are unchanged; random scoring begins at the next local midnight.
-  - Stamping tomorrow rather than today is deliberate: deploying mid-day onto a store that already
-    holds a scored, announced day would otherwise drop that day's legacy points out of
-    `weeklyTotals` and let the sweep re-roll it into results contradicting the podium already
-    posted in the channel. Pre-cutover dates are never settled, swept or announced.
-  - Consequence: if you deploy during the noon window, that day plays out under the old scoring
-    and gets no automatic daily results post (the old announce trigger is gone). Deploy outside
-    12:00–13:00 local to avoid it.
+  - On first start, the Store stamps `random_scoring_from` with today's local date. Everything
+    before it keeps legacy 3-2-1 podium scoring, so historical leaderboards and crowns are
+    unchanged. Pre-cutover dates are never settled, swept or announced.
+  - The cutover is today, not tomorrow, because the legacy full-house announce trigger no longer
+    exists: a day left in the legacy era would be scored 3-2-1 and then never posted, so a morning
+    deploy would silently swallow that whole day.
+  - The exception is a deploy onto a day whose results are already out (`daily_announced[today]`
+    set by the old build). That date keeps legacy scoring and the cutover moves to tomorrow —
+    re-scoring it would drop its legacy points out of `weeklyTotals` and contradict a podium
+    people have already read.
+  - Deploying mid-window is safe: entries already recorded for today are picked up when the window
+    settles, rather than being stranded. Anyone who posted before the deploy is still an entrant.
   - A game recorded but not yet settled contributes 0 to the leaderboard — provisional points
     never leak into `@bot leaderboard` mid-window.
 - Troubleshooting:
   - Points look wrong: check `awards[date][game]` in `data/store.json`; it is the single source of
     truth for scoring, and `awarded_at` shows when the window closed.
   - Results never posted: confirm every required game for that date has an `awards` entry. A game
-    nobody entered never opens a window, so the day cannot complete.
+    nobody entered gets an empty `awards` array at 12:05:05; if one is missing entirely, the day
+    had no entrants at all (nothing to announce) or the process was down across 12:05 and has seen
+    no message since.
   - Results settled but not posted: the Slack call failed. Check the logs; the next message in the
     channel or the 30s sweep retries it. `daily_announced[date]` missing while `awards[date]` is
     complete is exactly that state.
 
 ## Boom Game Ordering and Data Notes
 
-Effective 2025-09-10, the Boom game podium is computed by earliest Slack message timestamp (`event.ts`), not by order of receipt over WebSocket. This prevents out-of-order delivery from affecting results. Since the move to random point assignment (see above), timestamps no longer decide who wins — they decide when the tally window opens and closes, and which of a user's messages counts as their entry.
+Effective 2025-09-10, the Boom game podium is computed by earliest Slack message timestamp (`event.ts`), not by order of receipt over WebSocket. This prevents out-of-order delivery from affecting results. Since the move to random point assignment (see above), timestamps no longer decide who wins — the window is fixed at 12:00-12:05 local. They decide only whether a message falls inside it, and which of a user's messages counts as their entry.
+
+Effective 2026-08-31, a valid in-window message is recorded before any clown judgment is made. This guards a race proven in production on 2026-08-31 and reproduced in `tests/boom.race.test.ts`: Slack delivered the true 3rd-by-ts hadeda entry after a later one had already filled the old three-place podium, so the message was clowned without ever being recorded. Under random scoring there is no place left to lose — every unique entrant inside the entry window is recorded and scores whatever order the events arrive in — and the `ENTRY_GRACE_MS` deferral covers the same delay for a message sent just inside the window.
 
 Key points:
 - Timestamp use:
@@ -136,3 +152,31 @@ Operational notes:
 - Ensure CHAT_ALLOWED_CHANNELS limits where context is accumulated, if desired.
 - If you need to clear context: use the admin-only “@bot clear chat [all]” commands.
 - For debugging, “@bot context” shows the current channel transcript and high-level counts across channels.
+
+## Boom Game Day Settlement
+
+Effective 2026-08-28, a Boom day no longer needs every game to reach three entrants before it is
+announced. Under random scoring (see above) every game settles on the one fixed 12:00-12:05 window,
+so the number of entrants never blocks a day: a required game nobody entered simply settles empty
+at 12:05:05 alongside the games that were played.
+
+Key points:
+- Trigger: `catchUp` runs at the top of the message handler, on `@bot leaderboard`, and on a 30s
+  interval when `app.client` is available (absent in the unit-test harness).
+- Backfill bound: announcing, and every retry (results, crown, medals), is limited to the last
+  2 days. A day that stalled longer ago still settles, so its scores stay right, but stays
+  unannounced rather than being posted into the channel out of nowhere.
+- Days nobody played: only a date with at least one entrant is settled this way, so a quiet
+  workday produces no post at all.
+- Partial games: a game with one or two entrants awards `1` / `2..1` as usual; a game with no
+  entrants gets an empty `awards` array and renders `— no entries`.
+- Friday crown: written to `weekly_kings` / `weekly_crowned` only after `chat.postMessage` succeeds,
+  so a rate-limited crown post is retried rather than leaving a king nobody was told about.
+- Weekend/holiday notice: tracked in process memory per date, so one reply per weekend day. A
+  restart resets the tracker and can produce a second notice.
+
+Relevant implementation:
+- Announce path (`announceDay`, `postDailyResults`, `postWeeklyCrown`, `settleDay`, `catchUp`): [src/features/boom/index.ts](../src/features/boom/index.ts)
+- Store helpers (`duePending`, `pendingAnnouncements`, `hasAnyEntry`, `channelForDate`): [src/features/boom/store.ts](../src/features/boom/store.ts)
+- Window helpers (`windowOpensAtMs`, `windowClosesAtMs`, `windowSettlesAtMs`, `inEntryWindow`, `neededGamesForDate`): [src/features/boom/rules.ts](../src/features/boom/rules.ts)
+- Tests: [tests/boom.feature.test.ts](../tests/boom.feature.test.ts), [tests/boom.race.test.ts](../tests/boom.race.test.ts)

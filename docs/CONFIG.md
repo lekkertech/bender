@@ -11,9 +11,9 @@ Define configuration via environment variables and keep secrets out of source co
 - `ALLOWED_CHANNELS`: Comma-separated channel IDs allowed to interact (e.g., `C0123,C0456`). Optional.
 - `DEFAULT_REPLY_MODE`: `thread` or `channel`. Optional; default `channel`.
 - `FEATURES`: Comma-separated list of features to enable. Defaults to `boom,chat` if unset. Valid values: `boom`, `chat`.
-- `TIMEZONE`: Local timezone used for the noon window and day bucketing. Optional; default `Africa/Johannesburg`.
+- `TIMEZONE`: Local timezone used for the entry window and day bucketing. Optional; default `Africa/Johannesburg`.
 - `HOLIDAYS`: Comma-separated extra `YYYY-MM-DD` holidays, on top of `data/holidays/za-<year>.json`. Optional.
-- `BOOM_ENTRY_WINDOW_MS`: How long a game's tally window stays open after its first valid entry, in milliseconds. Optional; default `300000` (5 minutes). Points are assigned when the window closes.
+- `BOOM_ENTRY_WINDOW_MS`: How long the entry window stays open from 12:00:00 local, in milliseconds. Optional; default `300000` (5 minutes), i.e. entries count from 12:00:00 up to but not including 12:05:00. Points are assigned 5s after it shuts.
 - `OPENAI_API_KEY`: Enable Chat feature (AI) when set.
 - `OPENAI_MODEL`: Defaults to `gpt-4.1-nano`. Override to another model if desired.
 - `CHAT_ALLOWED_CHANNELS`: Optional override allowlist for the Chat feature; if unset, Chat responds in any channel the bot is a member of.

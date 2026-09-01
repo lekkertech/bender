@@ -5,10 +5,12 @@ import { Store } from './store.js';
 import {
   detectGameFromMessage,
   detectAnyGameEmoji,
-  inNoonWindow,
+  inEntryWindow,
   localDayInfo,
   isFriday,
   neededGamesForDate,
+  windowSettlesAtMs,
+  GAMES,
   weekKeyFor,
   weekStartEnd,
   GAME_EMOJI,
@@ -20,7 +22,7 @@ const PODIUM_MEDALS = ['first_place_medal', 'second_place_medal', 'third_place_m
 /** Reaction confirming an entry was accepted into the tally. */
 const ACK_REACTION = 'white_check_mark';
 
-/** How often to sweep for tally windows whose timers were lost to a restart. */
+/** How often to sweep for entry windows whose timers were lost to a restart. */
 const SWEEP_INTERVAL_MS = 30 * 1000;
 
 /** Slack rejects adding a reaction that is already present; for us that is success. */
@@ -36,42 +38,47 @@ function inAllowedChannel(cfg: Config, channel?: string): boolean {
 export function registerBoomFeature(app: App, cfg: Config) {
   const db = new Store();
 
-  // Pending tally windows: "<date>:<game>" -> the timer that will settle it, plus the settle time
-  // it was scheduled for (an out-of-order earlier entry can move the deadline back).
-  const timers = new Map<string, { timer: ReturnType<typeof setTimeout>; settlesAt: number }>();
+  // Pending settle timers, one per date. The window is fixed at 12:00-12:05 local, so every game
+  // for a date settles at the same instant and the deadline never moves.
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Dates whose announcement is mid-flight, so a timer firing during an await cannot double-post.
   const announcing = new Set<string>();
 
-  /** Schedule (or reschedule) the settling of a game's tally window. */
-  function scheduleClose(client: any, date: string, game: Game, logger?: any) {
-    const settlesAt = db.windowSettlesAtMs(date, game);
-    if (settlesAt == null || db.isResolved(date, game) || !db.isRandomEra(date)) return;
-    const key = `${date}:${game}`;
-    const existing = timers.get(key);
-    if (existing) {
-      if (existing.settlesAt <= settlesAt) return; // Already scheduled at or before this deadline
-      clearTimeout(existing.timer);
-    }
+  // Dates already told "Boom isn't played today", so a busy weekend gets one reply, not one per post.
+  const notPlayedNotified = new Set<string>();
+
+  /** Schedule the settling of a date's entry window. One timer per date; the deadline is fixed. */
+  function scheduleSettle(client: any, date: string, logger?: any) {
+    if (timers.has(date) || !db.isRandomEra(date) || db.hasDailyAnnounced(date)) return;
     const timer = setTimeout(() => {
-      timers.delete(key);
-      closeGame(client, date, game, logger).catch((err) => logger?.error?.(err));
-    }, Math.max(0, settlesAt - Date.now()));
+      timers.delete(date);
+      settleDay(client, date, logger).catch((err) => logger?.error?.(err));
+    }, Math.max(0, windowSettlesAtMs(date) - Date.now()));
     timer.unref?.();
-    timers.set(key, { timer, settlesAt });
+    timers.set(date, timer);
   }
 
-  /** Assign points for a game whose window has closed, then announce the day if it is complete. */
-  async function closeGame(client: any, date: string, game: Game, logger?: any) {
-    const existing = timers.get(`${date}:${game}`);
-    if (existing) {
-      clearTimeout(existing.timer);
-      timers.delete(`${date}:${game}`);
+  /**
+   * Assign points for every game of a date whose window has closed, then announce the day.
+   * Needed games nobody entered settle empty here too, so the day never stalls on an unplayed one.
+   */
+  async function settleDay(client: any, date: string, logger?: any) {
+    const timer = timers.get(date);
+    if (timer) {
+      clearTimeout(timer);
+      timers.delete(date);
     }
+    for (const game of new Set([...neededGamesForDate(date), ...GAMES.filter((g) => db.entrants(date, g).length)])) {
+      await closeGame(client, date, game, logger);
+    }
+    await announceDay(client, date, logger);
+  }
 
+  /** Assign points for one game whose window has closed, and medal its top earners. */
+  async function closeGame(client: any, date: string, game: Game, logger?: any) {
     db.resolveGame(date, game);
     await applyMedals(client, date, game, logger);
-    await announceDay(client, date, logger);
   }
 
   /**
@@ -113,9 +120,18 @@ export function registerBoomFeature(app: App, cfg: Config) {
     // this list is only the ones orphaned by an earlier crash or Slack failure.
     const orphanedMedals = db.pendingMedals();
 
+    const settledDates = new Set<string>();
     for (const p of db.duePending()) {
       try {
         await closeGame(client, p.date, p.game, logger);
+        settledDates.add(p.date);
+      } catch (err) {
+        logger?.error?.(err);
+      }
+    }
+    for (const date of settledDates) {
+      try {
+        await announceDay(client, date, logger);
       } catch (err) {
         logger?.error?.(err);
       }
@@ -146,6 +162,9 @@ export function registerBoomFeature(app: App, cfg: Config) {
   async function announceDay(client: any, date: string, logger?: any) {
     const neededGames = neededGamesForDate(date);
     if (!neededGames.every((g) => db.isResolved(date, g))) return;
+    // A day older than the retry window stays settled but silent. Posting a three-week-old podium
+    // into the channel — as a restart or a late catch-up could — is worse than never posting it.
+    if (!db.isWithinRetryWindow(date)) return;
 
     const weekKey = weekKeyFor(date);
     const owesResults = !db.hasDailyAnnounced(date);
@@ -153,9 +172,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
     if ((!owesResults && !owesCrown) || announcing.has(date)) return;
 
     // Announce in the channel the day's earliest entry came from.
-    const channel = neededGames
-      .map((g) => db.entrants(date, g).find((e) => e.channel_id)?.channel_id)
-      .find(Boolean);
+    const channel = db.channelForDate(date);
     if (!channel) {
       logger?.warn?.({ date }, '[boom] cannot announce daily results: no channel recorded');
       return;
@@ -252,7 +269,7 @@ export function registerBoomFeature(app: App, cfg: Config) {
       const tsStr = String(m.ts || '0');
       const tsSeconds = slackTsToSeconds(tsStr);
       const { date, weekday, isWorkday, isHoliday } = localDayInfo(tsSeconds);
-      const inWindow = inNoonWindow(tsSeconds);
+      const inWindow = inEntryWindow(tsSeconds);
       const neededGames = neededGamesForDate(date);
 
       // Settle any window whose deadline passed while no timer was live (e.g. after a restart) and
@@ -271,7 +288,9 @@ export function registerBoomFeature(app: App, cfg: Config) {
 
       // Boom Game is only played on workdays; on weekends/holidays, explicitly tell users.
       if (!isWorkday) {
-        if (anyEmoji && inWindow) {
+        // One notice per date, so a busy weekend does not get a reply per poster.
+        if (anyEmoji && inWindow && !notPlayedNotified.has(date)) {
+          notPlayedNotified.add(date);
           const reason = isHoliday ? "it's a holiday" : 'it\'s the weekend';
           await client.chat.postMessage({ channel: m.channel, text: `Boom isn't played today — ${reason}.` });
         }
@@ -284,30 +303,20 @@ export function registerBoomFeature(app: App, cfg: Config) {
         } catch {}
       };
 
-      // Clown any game emoji posted after its own tally window has closed or once every game for
-      // the day has settled. Lateness is judged on the message's own ts (full sub-second
-      // precision), and settling is deferred by ENTRY_GRACE_MS, so a message sent inside the
-      // window but delivered a moment late is still accepted rather than clowned.
-      const closesAt = anyEmoji ? db.windowClosesAtMs(date, anyEmoji) : null;
-      // floor(), not round(): rounding up would push a ts in the final half-millisecond of the
-      // noon window past the clamped close and clown a message that was sent in time.
-      const tsMs = Math.floor(Number(tsStr) * 1000);
-      const tooLate = closesAt != null && Number.isFinite(tsMs) && tsMs > closesAt;
-      const gameClosed = anyEmoji ? db.isResolved(date, anyEmoji) || tooLate : false;
-      const dayClosed = neededGames.every((g) => db.isResolved(date, g));
-      if (anyEmoji && (!inWindow || gameClosed || dayClosed)) {
+      // An emoji sent outside the window was already clowned above, on its ts alone. What is left
+      // is an in-window message that arrived after its game (or the whole day) had settled: the
+      // grace period has passed and the points are assigned, so it cannot be taken.
+      if (anyEmoji && (db.isResolved(date, anyEmoji) || neededGames.every((g) => db.isResolved(date, g)))) {
         await clown();
         return;
       }
-      if (!inWindow) return;
 
       // Determine game by exact single-emoji message
       const game = detectGameFromMessage((m.text || ''), weekday);
       if (!game) return;
 
       // Record the entry and bump the raw tally in one atomic store call, so concurrently
-      // delivered messages from the same user cannot both be counted. The Slack message ts is
-      // stored, anchoring the tally window to the earliest entry rather than arrival order.
+      // delivered messages from the same user cannot both be counted.
       const outcome = db.addEntry(date, game, m.user, tsStr, m.channel);
       // A redelivery of the already-recorded message is a Slack retry, not a repeat post.
       if (outcome === 'redelivery') return;
@@ -317,9 +326,10 @@ export function registerBoomFeature(app: App, cfg: Config) {
         return;
       }
 
-      // The first entry opens a tally window; every unique entrant inside it draws a unique random
-      // point value in 1..n when it settles. Medals and the daily announcement follow from there.
-      scheduleClose(client, date, game, logger);
+      // The window is already open (12:00 local); this just makes sure something is scheduled to
+      // close it. Every unique entrant inside it draws a unique random point value in 1..n when
+      // it settles. Medals and the daily announcement follow from there.
+      scheduleSettle(client, date, logger);
 
       // Acknowledge the accepted entry so the player knows they are in the tally.
       try {

@@ -139,7 +139,8 @@ function setupFakeApp() {
 
 /**
  * Register the feature the day before the game day, then jump the clock to it. The Store stamps
- * the random-scoring cutover as the day after first boot, so this is "deployed yesterday".
+ * the random-scoring cutover as the boot date, so this is "deployed yesterday" and the game day is
+ * comfortably inside the random era.
  */
 function bootAt(iso: string) {
   const target = DateTime.fromISO(iso, { zone: ZONE });
@@ -149,7 +150,7 @@ function bootAt(iso: string) {
   return t;
 }
 
-/** Let every open tally window close and settle (window + grace), running its timer callbacks. */
+/** Let every open entry window close and settle (window + grace), running its timer callbacks. */
 async function closeWindows() {
   await vi.advanceTimersByTimeAsync(ENTRY_WINDOW_MS + ENTRY_GRACE_MS + 1000);
 }
@@ -273,7 +274,7 @@ describe('Boom feature integration-like behavior', () => {
     expect(clowned(t)).toEqual([]);
   });
 
-  it('stays silent while a tally window is still open', async () => {
+  it('stays silent while a entry window is still open', async () => {
     const t = bootAt('2025-03-03T12:00:05');
     await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:05') });
     await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:06') });
@@ -433,15 +434,15 @@ describe('Boom feature integration-like behavior', () => {
     const firstTs = toTs('2025-03-03T12:00:00');
     await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: firstTs });
 
-    // Sent 12:04:59 (inside the window, which closes 12:05:00), delivered 12:05:02 — settling is
-    // deferred to 12:05:03, so the entry still counts instead of being clowned as too late.
+    // Sent 12:04:59 (inside the window, which shuts at 12:05:00), delivered 12:05:03 — settling is
+    // deferred to 12:05:05, so the entry still counts instead of being clowned as too late.
     const graceTs = toTs('2025-03-03T12:04:59');
     await t.triggerMessage({
       text: ':boom:',
       user: 'U2',
       channel: 'C1',
       ts: graceTs,
-      at: toTs('2025-03-03T12:05:02'),
+      at: toTs('2025-03-03T12:05:03'),
     });
     expect(acked(t)).toEqual([firstTs, graceTs]);
     expect(clowned(t)).toEqual([]);
@@ -462,21 +463,25 @@ describe('Boom feature integration-like behavior', () => {
     expect(boom.map((a: any) => a.points).sort()).toEqual([1, 2]);
   });
 
-  it('clamps the tally window to the end of the noon window', async () => {
-    const t = bootAt('2025-03-03T12:57:00');
-    const firstTs = toTs('2025-03-03T12:57:00');
-    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: firstTs });
+  it('runs 12:00:00 to 12:05:00 whatever time the first entry lands', async () => {
+    const t = bootAt('2025-03-03T11:59:00');
 
-    // A plain 5 minutes would run to 13:02, where entries are rejected as outside the noon
-    // window. Clamped to 12:59:59.999, so this is the last entry that can join.
-    const lastTs = toTs('2025-03-03T12:59:30');
+    // Too early: the window has not opened yet.
+    const earlyTs = toTs('2025-03-03T11:59:59');
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U0', channel: 'C1', ts: earlyTs });
+
+    // The window does not start when the first person posts — it opened at noon regardless, so a
+    // first entry at 12:04:00 gets 60 seconds, not a fresh 5 minutes.
+    const firstTs = toTs('2025-03-03T12:04:00');
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: firstTs });
+    const lastTs = toTs('2025-03-03T12:04:59');
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: lastTs });
     expect(acked(t)).toEqual([firstTs, lastTs]);
 
-    // Past the noon window: clowned, and the settled tally holds only the two in-window entrants
-    const outsideTs = toTs('2025-03-03T13:00:30');
-    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: outsideTs });
-    expect(clowned(t)).toEqual([outsideTs]);
+    // 12:05:01 is late even though only a minute of tallying happened.
+    const lateTs = toTs('2025-03-03T12:05:01');
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: lateTs });
+    expect(clowned(t)).toEqual([earlyTs, lateTs]);
 
     await closeWindows();
     const hadeda = readStore().awards['2025-03-03'].hadeda;
@@ -603,7 +608,7 @@ describe('Boom feature integration-like behavior', () => {
     await closeWindows();
     expect(readStore().awards['2025-03-03'].boom.length).toBe(2);
 
-    // Same day, still inside the noon hour, but boom has already settled
+    // Same day, still inside the noon hour, but the window shut at 12:05
     await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-03T12:10:00') });
     expect(clowned(t)).toEqual([toTs('2025-03-03T12:10:00')]);
     expect(reactions(t, 'clown_face')[0]).toMatchObject({ channel: 'C1' });
@@ -613,12 +618,12 @@ describe('Boom feature integration-like behavior', () => {
     const boom = readStore().awards['2025-03-03'].boom;
     expect(boom.map((a: any) => a.user_id).sort()).toEqual(['U1', 'U2']);
 
-    // A late hadeda entry still opens its own window and scores normally
-    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-03T12:11:00') });
+    // A late hadeda entry gets no window of its own: the day's single window is already shut.
+    const lateHadeda = toTs('2025-03-03T12:11:00');
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: lateHadeda });
     await closeWindows();
-    expect(readStore().awards['2025-03-03'].hadeda).toEqual([
-      expect.objectContaining({ user_id: 'U3', points: 1 }),
-    ]);
+    expect(clowned(t)).toContain(lateHadeda);
+    expect(readStore().awards['2025-03-03'].hadeda).toEqual([]);
     expect(postsMatching(t, 'Boom Game — Daily Podium').length).toBe(1);
   });
 
@@ -763,5 +768,149 @@ describe('Boom feature integration-like behavior', () => {
       awards.boom.find((a: any) => a.user_id === 'U1').points +
       awards.hadeda.find((a: any) => a.user_id === 'U1').points;
     expect(board[0].text).toContain(`User U1 — ${u1} pt`);
+  });
+});
+
+/**
+ * Upstream fixed these against the 3-2-1 podium, where a game that never reached three entrants
+ * left the day unannounced forever. Random scoring settles each game on its own timer, so a short
+ * game is no longer special — but a needed game *nobody* entered still has no window to close, and
+ * would stall the day's results (and a Friday crown) if the noon close did not settle it empty.
+ */
+describe('Boom feature: needed games that go unplayed', () => {
+  it('announces a game that closed with only two entrants', async () => {
+    const t = bootAt('2025-03-10T12:00:00');
+    for (const u of ['U1', 'U2', 'U3']) {
+      await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs(`2025-03-10T12:00:0${u[1]}`) });
+    }
+    for (const u of ['U1', 'U2']) {
+      await t.triggerMessage({ text: ':hadeda-boom:', user: u, channel: 'C1', ts: toTs(`2025-03-10T12:01:0${u[1]}`) });
+    }
+
+    // Windows still open: the day stays silent.
+    expect(t.calls.chatPostCalls.length).toBe(0);
+
+    await closeWindows();
+
+    const text = String(postsMatching(t, 'Daily Podium')[0].text);
+    expect(text).toContain('Daily Podium (2025-03-10)');
+    // Two entrants share the two available amounts, in some order.
+    const hadeda = parseAwards(text, ':hadeda-boom:');
+    expect(hadeda.map((a) => a.points).sort()).toEqual([1, 2]);
+    expect(hadeda.map((a) => a.name).sort()).toEqual(['User U1', 'User U2']);
+    expect(readStore().daily_announced['2025-03-10']).toBeTruthy();
+  });
+
+  it('settles a needed game nobody played when the window shuts, and says so', async () => {
+    const t = bootAt('2025-03-10T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:00:01') });
+    expect(t.calls.chatPostCalls.length).toBe(0);
+
+    // One window covers the whole day, so hadeda settles empty alongside boom rather than
+    // stalling the day on a game nobody played.
+    await closeWindows();
+
+    const text = String(postsMatching(t, 'Daily Podium')[0].text);
+    expect(text).toContain(':hadeda-boom: — no entries');
+    expect(parseAwards(text, ':boom:')).toEqual([{ name: 'User U1', points: 1 }]);
+    expect(readStore().awards['2025-03-10'].hadeda).toEqual([]);
+  });
+
+  it('crowns the week on a Friday where a needed game went unplayed', async () => {
+    const t = bootAt('2025-03-14T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-14T12:00:01') });
+    expect(postsMatching(t, 'Weekly Crown').length).toBe(0);
+
+    await closeWindows();
+
+    expect(postsMatching(t, 'Daily Podium').length).toBe(1);
+    expect(postsMatching(t, 'Weekly Crown').length).toBe(1);
+    expect(readStore().weekly_crowned['2025-W11']).toBeTruthy();
+  });
+
+  it('leaves a fully-played day alone once it is older than the retry window', async () => {
+    const t = bootAt('2025-03-10T12:00:00');
+    // Every needed game played, so nothing but the retry bound stands between this day and a post.
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:00:01') });
+    await t.triggerMessage({ text: ':boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-10T12:00:02') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:01:01') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-10T12:01:02') });
+
+    // The timers never fire (the process was down). Three weeks on, someone says hello: the day
+    // may settle, but resurrecting its podium into the channel is worse than never posting it.
+    vi.setSystemTime(DateTime.fromISO('2025-03-31T09:00:00', { zone: ZONE }).toMillis());
+    await t.triggerMessage({ text: 'hello', user: 'U9', channel: 'C1', ts: toTs('2025-03-31T09:00:01') });
+
+    expect(t.calls.chatPostCalls).toEqual([]);
+    expect(readStore().daily_announced['2025-03-10']).toBeUndefined();
+  });
+
+  it('leaves a stalled part-played day alone once it is older than the retry window', async () => {
+    const t = bootAt('2025-03-10T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:00:01') });
+
+    vi.setSystemTime(DateTime.fromISO('2025-03-17T09:00:00', { zone: ZONE }).toMillis());
+    await t.triggerMessage({ text: 'hi', user: 'U9', channel: 'C1', ts: toTs('2025-03-17T09:00:01') });
+
+    expect(t.calls.chatPostCalls).toEqual([]);
+    expect(readStore().daily_announced['2025-03-10']).toBeUndefined();
+  });
+
+  it('does not announce a workday nobody played at all', async () => {
+    const t = bootAt('2025-03-10T12:00:00');
+    // Chatter only: no game emoji, so there is nothing to settle or announce.
+    await t.triggerMessage({ text: 'morning', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:00:01') });
+
+    vi.setSystemTime(DateTime.fromISO('2025-03-10T13:00:01', { zone: ZONE }).toMillis());
+    await t.triggerMessage({ text: 'hi', user: 'U9', channel: 'C1', ts: toTs('2025-03-10T13:00:02') });
+
+    expect(t.calls.chatPostCalls.length).toBe(0);
+    expect(readStore().daily_announced['2025-03-10']).toBeUndefined();
+  });
+});
+
+describe('Boom feature: announcement regressions', () => {
+  it('tells the channel the game is off once per weekend day, not once per poster', async () => {
+    const t = bootAt('2025-03-15T12:00:00');
+    for (const u of ['U1', 'U2', 'U3']) {
+      await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs(`2025-03-15T12:00:0${u[1]}`) });
+    }
+    expect(t.calls.chatPostCalls.length).toBe(1);
+    expect(String(t.calls.chatPostCalls[0].text)).toContain("Boom isn't played today");
+  });
+
+  it('scores and posts the day it was deployed on', async () => {
+    // The cutover used to be stamped as *tomorrow*, which left the deploy day scored 3-2-1 with no
+    // announce path left to post it: a morning deploy silently swallowed that whole day.
+    vi.setSystemTime(DateTime.fromISO('2025-03-10T09:00:00', { zone: ZONE }).toMillis());
+    const t = setupFakeApp();
+    expect(readStore().random_scoring_from).toBe('2025-03-10');
+
+    for (const u of ['U1', 'U2']) {
+      await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs(`2025-03-10T12:00:0${u[1]}`) });
+      await t.triggerMessage({ text: ':hadeda-boom:', user: u, channel: 'C1', ts: toTs(`2025-03-10T12:01:0${u[1]}`) });
+    }
+    await closeWindows();
+
+    const text = String(postsMatching(t, 'Daily Podium')[0].text);
+    expect(text).toContain('Daily Podium (2025-03-10)');
+    expect(parseAwards(text, ':boom:').map((a) => a.points).sort()).toEqual([1, 2]);
+    expect(readStore().daily_announced['2025-03-10']).toBeTruthy();
+  });
+
+  it('posts a single podium when two messages settle the day in the same tick', async () => {
+    const t = bootAt('2025-03-10T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-10T12:00:01') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-10T12:00:02') });
+
+    // Both windows have closed but their timers never ran (as after a restart), so the catch-up on
+    // each incoming message settles the day. Delivered together, each starts before the other ends.
+    vi.setSystemTime(DateTime.fromISO('2025-03-10T12:30:00', { zone: ZONE }).toMillis());
+    await Promise.all([
+      t.triggerMessage({ text: 'hi', user: 'U8', channel: 'C1', ts: toTs('2025-03-10T12:30:01') }),
+      t.triggerMessage({ text: 'there', user: 'U9', channel: 'C1', ts: toTs('2025-03-10T12:30:02') }),
+    ]);
+
+    expect(postsMatching(t, 'Daily Podium').length).toBe(1);
   });
 });

@@ -23,16 +23,19 @@ Strategies and checklists to validate your Slack bot.
 - Channel allowlist:
   - Messages in channels not listed in `ALLOWED_CHANNELS` (or `CHAT_ALLOWED_CHANNELS` for Chat) are ignored.
 - Boom module:
-  - Noon window: posting `:boom:` / `💥`, `:hadeda-boom:`, and (Wed only) `:wednesday-boom:` between 12:00–12:59 records counts and entries.
-  - The first valid entry per emoji opens a 5-minute tally window; each accepted entry is reacted to with `:white_check_mark:` straight away, and nothing is scored until the window closes.
+  - Entry window: posting `:boom:` / `💥`, `:hadeda-boom:`, and (Wed only) `:wednesday-boom:` between 12:00:00 and 12:04:59 records counts and entries.
+  - One fixed window per day, 12:00:00–12:05:00, shared by every emoji. It opens at noon whether or not anyone posts: a first entry at 12:04:00 gets 60 seconds, not a fresh 5 minutes. Each accepted entry is reacted to with `:white_check_mark:` straight away, and nothing is scored until the window shuts.
   - When the window closes, each of the `n` unique entrants gets a unique random amount between 1 and `n` (verify no duplicate amounts and no gaps), and the top three earners get medal reactions.
   - Posting the same emoji again after your first entry: `:clown_face:`, no acknowledgement, and `counts` unchanged (still one per entrant).
   - Outside window, after a game's window closed, or after the day is closed: bot adds `:clown_face:` reaction and awards nothing.
   - Daily results auto-post once every required game for the day has settled.
   - Friday crown posts weekly winners right after the Friday daily results.
-  - A first entry at ~12:57 closes its window at 12:59:59 rather than 13:02, and entries at 13:00+ are clowned.
+  - Entries at 11:59:59 or 12:05:00 are clowned, as is anything later in the noon hour: only 12:00:00–12:04:59 counts, judged on the message timestamp rather than delivery time.
   - Restart mid-window: after restarting the bot, the pending window still settles (on the next message in the channel, or within ~30s via the background sweep).
-  - Deploy day: dates before the stamped `random_scoring_from` stay on legacy 3-2-1 scoring and are never settled or re-rolled — deploy outside 12:00–13:00 so a day in progress is not split across the two scoring rules.
+  - Deploy day: the day you deploy is scored and announced under the new rules, including entries recorded before the deploy. Dates before the stamped `random_scoring_from` stay on legacy 3-2-1 scoring and are never settled or re-rolled; if the old build already announced today, the cutover moves to tomorrow and today keeps its posted podium.
+  - A required game nobody played renders `— no entries`, and the day still announces at 12:05:05 — or, if the process was down then, on the next message in the channel or the 30s sweep.
+  - Weekend/holiday "Boom isn't played today" notice is posted once per date, not once per poster.
+  - The crown is persisted only after its message succeeds; a failed crown post leaves the week uncrowned and retryable.
   - `@bot leaderboard` prints week-to-date leaderboard with current king(s).
 - Chat module (app mentions):
   - `@bot hello there` yields an AI reply in-channel by default (threaded if `DEFAULT_REPLY_MODE=thread`).

@@ -3,12 +3,10 @@ import { dirname, join } from 'node:path';
 import { DateTime } from 'luxon';
 import {
   assignRandomPoints,
-  ENTRY_GRACE_MS,
-  ENTRY_WINDOW_MS,
   GAMES,
   isFriday,
   neededGamesForDate,
-  noonWindowEndMs,
+  windowSettlesAtMs,
   PODIUM_WEIGHTS,
   TZ,
   weekKeyFor,
@@ -18,7 +16,7 @@ import {
 
 type Winner = { user_id: string; channel_id: string; message_ts: string; created_at: string };
 
-/** A settled point award for one entrant, assigned when the game's tally window closed. */
+/** A settled point award for one entrant, assigned when the game's entry window closed. */
 export type Award = {
   user_id: string;
   points: number;
@@ -44,7 +42,7 @@ type StoreData = {
   // date -> game -> array of Winner events (may include multiple per user; earliest counts)
   messages?: Record<string, Record<Game, Winner[]>>;
 
-  // Settled point awards per date+game, written once when the game's tally window closes.
+  // Settled point awards per date+game, written once when the game's entry window closes.
   // Presence of an array for date+game means that game is resolved and immutable.
   awards?: Record<string, Partial<Record<Game, Award[]>>>;
 
@@ -155,13 +153,19 @@ export class Store {
     // Stamp the random-scoring cutover on first use so every date already in the ledger keeps its
     // legacy 3-2-1 scoring and is never retroactively re-assigned random points.
     //
-    // Deliberately *tomorrow*, not today: deploying mid-day onto a store that already holds a
-    // scored, announced day would otherwise put that date in the random era, drop its legacy
-    // 3-2-1 points out of weeklyTotals, and let the sweep re-roll it into results that contradict
-    // the podium already posted in the channel. The deploy day therefore plays out entirely under
-    // the old rules and random scoring starts at the next local midnight.
+    // The cutover is *today* unless today's results are already out. Starting tomorrow instead
+    // would leave the deploy day in the legacy era with no announce path left to post it — the
+    // 3-2-1 trigger is gone — so a morning deploy would silently swallow that whole day. Entries
+    // already recorded today are simply picked up by the entry window when it settles.
+    //
+    // The one date that must not move is a day whose podium has already been posted: re-scoring it
+    // would drop its legacy points out of weeklyTotals and contradict a message people have read.
     if (!this.data.random_scoring_from) {
-      this.data.random_scoring_from = DateTime.now().setZone(TZ).plus({ days: 1 }).toISODate()!;
+      const now = DateTime.now().setZone(TZ);
+      const today = now.toISODate()!;
+      this.data.random_scoring_from = this.hasDailyAnnounced(today)
+        ? now.plus({ days: 1 }).toISODate()!
+        : today;
       this.flush();
     }
   }
@@ -381,39 +385,6 @@ export class Store {
     return 'recorded';
   }
 
-  /** ms epoch of the first valid entry for a date+game — when its tally window opened. */
-  windowOpenedAtMs(date: string, game: Game): number | null {
-    const msgs = this.getMessages(date, game);
-    if (!msgs.length) return null;
-    let earliest = Infinity;
-    for (const m of msgs) {
-      const t = parseSlackTs(m.message_ts);
-      if (t > 0 && t < earliest) earliest = t;
-    }
-    return Number.isFinite(earliest) ? earliest * 1000 : null;
-  }
-
-  /**
-   * ms epoch of the last message ts that can still enter a date+game, or null if the window never
-   * opened. Clamped to the end of the noon window: a game opened at 12:57 closes at 12:59:59.999
-   * rather than running to 13:02, where entries would be rejected as outside the noon window.
-   */
-  windowClosesAtMs(date: string, game: Game): number | null {
-    const opened = this.windowOpenedAtMs(date, game);
-    if (opened == null) return null;
-    // max() keeps the window from ever ending before it opened, for entries with an odd ts.
-    return Math.max(opened, Math.min(opened + ENTRY_WINDOW_MS, noonWindowEndMs(date)));
-  }
-
-  /**
-   * ms epoch when a date+game's points get assigned — the window close plus a short grace, so a
-   * message sent inside the window but delivered late still counts.
-   */
-  windowSettlesAtMs(date: string, game: Game): number | null {
-    const closes = this.windowClosesAtMs(date, game);
-    return closes == null ? null : closes + ENTRY_GRACE_MS;
-  }
-
   /**
    * True when a date is scored by random point assignment. Dates before the cutover stay on the
    * legacy 3-2-1 podium and must never be settled — including the deploy day itself, which can
@@ -436,16 +407,23 @@ export class Store {
   }
 
   /**
-   * Close a date+game's tally window and give each of the n unique entrants a unique random
+   * Close a date+game's entry window and give each of the n unique entrants a unique random
    * point value in 1..n. Idempotent: once resolved, the stored awards are returned unchanged.
+   *
+   * A game nobody entered settles empty, but only after the noon window has passed: before that
+   * the game is still open. Settling it is what stops a day where one needed game went unplayed
+   * from stalling its results — and, on a Friday, that week's crown — forever.
    */
-  resolveGame(date: string, game: Game, rng: () => number = Math.random): Award[] {
+  resolveGame(date: string, game: Game, rng: () => number = Math.random, nowMs = Date.now()): Award[] {
     this.ensureDay(date);
     if (this.isResolved(date, game)) return this.getAwards(date, game);
     if (!this.isRandomEra(date)) return []; // Pre-cutover day: stays on legacy podium scoring.
 
     const entrants = this.earliestMessagesByUser(date, game);
-    if (!entrants.length) return []; // Nothing to resolve; window never opened.
+    // A game nobody entered settles empty, but only once the window is past settling: before that
+    // an entry could still arrive. Settling it is what stops a day where one needed game went
+    // unplayed from stalling its results — and, on a Friday, that week's crown — forever.
+    if (!entrants.length && nowMs < windowSettlesAtMs(date)) return [];
 
     const awarded_at = DateTime.now().toISO()!;
     const awards: Award[] = assignRandomPoints(entrants, rng).map(({ entrant, points }) => ({
@@ -464,8 +442,14 @@ export class Store {
   }
 
   /**
-   * Date+game pairs that have entries and a settled-by deadline in the past but no awards yet —
-   * work the in-process timers missed (e.g. the bot restarted mid-window).
+   * Date+game pairs past their settling deadline that hold no awards yet — work the in-process
+   * timers missed (e.g. the bot restarted mid-window).
+   *
+   * The window is fixed per date, so every game settles at the same instant whether or not anyone
+   * played it. A needed game with no entries settles empty, which is what stops a day where one
+   * game went unplayed from stalling its results — and, on a Friday, that week's crown — forever.
+   * Only a date somebody actually played settles at all; announcing is bounded separately by
+   * isWithinRetryWindow, so an old day still settles correctly but never reaches the channel.
    */
   duePending(nowMs = Date.now()): Array<{ date: string; game: Game; channel_id: string }> {
     const out: Array<{ date: string; game: Game; channel_id: string }> = [];
@@ -474,13 +458,15 @@ export class Store {
       if (!this.isRandomEra(date)) continue;
       // A day the old build already announced (and medalled) is finished; leave it alone.
       if (this.hasDailyAnnounced(date)) continue;
+      if (nowMs < windowSettlesAtMs(date)) continue; // Still open, or inside the delivery grace.
+      if (!this.hasAnyEntry(date)) continue; // Nobody played: nothing to settle or announce.
+      const needed = neededGamesForDate(date);
       for (const game of GAMES) {
         if (this.isResolved(date, game)) continue;
-        const settles = this.windowSettlesAtMs(date, game);
-        if (settles == null || nowMs < settles) continue;
         const first = this.earliestMessagesByUser(date, game)[0];
-        if (!first) continue;
-        out.push({ date, game, channel_id: first.channel_id || '' });
+        // Settle what was played, plus the needed games nobody entered.
+        if (!first && !needed.includes(game)) continue;
+        out.push({ date, game, channel_id: first?.channel_id || this.channelForDate(date) || '' });
       }
     }
     return out;
@@ -510,6 +496,8 @@ export class Store {
       if (date < oldest || !this.isRandomEra(date)) continue;
       for (const game of GAMES) {
         if (!this.isResolved(date, game) || this.hasMedalled(date, game)) continue;
+        // A game nobody entered settles empty; there is nothing to react to.
+        if (!this.getAwards(date, game).length) continue;
         out.push({ date, game });
       }
     }
@@ -519,6 +507,15 @@ export class Store {
   /** Oldest date a failed post/reaction is still retried for. */
   private oldestRetryDate(nowMs: number): string {
     return DateTime.fromMillis(nowMs).setZone(TZ).minus({ days: RETRY_DAYS }).toISODate()!;
+  }
+
+  /**
+   * True while a date is recent enough to post results for. Every announce path is gated on this,
+   * not just the retry sweep: a day left unsettled by a long outage still settles (so its scores
+   * are right) but must never surface a weeks-old podium in the channel.
+   */
+  isWithinRetryWindow(date: string, nowMs = Date.now()): boolean {
+    return date >= this.oldestRetryDate(nowMs);
   }
 
   /**
@@ -540,6 +537,20 @@ export class Store {
       out.push(date);
     }
     return out.sort();
+  }
+
+  /** True when at least one game on this date has an entrant — i.e. the day was actually played. */
+  hasAnyEntry(date: string): boolean {
+    return GAMES.some((g) => this.earliestMessagesByUser(date, g).length > 0);
+  }
+
+  /** The channel a date's earliest recorded entry came from, or null if none was stored. */
+  channelForDate(date: string): string | null {
+    for (const g of GAMES) {
+      const msg = this.earliestMessagesByUser(date, g).find((m) => m.channel_id);
+      if (msg) return msg.channel_id;
+    }
+    return null;
   }
 
   markDailyAnnounced(date: string) {

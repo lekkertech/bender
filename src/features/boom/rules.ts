@@ -14,8 +14,9 @@ export const GAMES: readonly Game[] = ['boom', 'hadeda', 'wednesday'] as const;
 export const PODIUM_WEIGHTS = [3, 2, 1] as const;
 
 /**
- * How long a game's tally window stays open, measured from its first valid entry.
- * When it closes, every unique entrant is given a unique random point value in 1..n.
+ * How long the entry window stays open, measured from 12:00:00 local. The window is the same for
+ * every game and does not move: it opens at noon whether or not anyone posts, and closes 5 minutes
+ * later. When it closes, every unique entrant is given a unique random point value in 1..n.
  */
 export const ENTRY_WINDOW_MS = (() => {
   const raw = Number(process.env.BOOM_ENTRY_WINDOW_MS);
@@ -24,9 +25,12 @@ export const ENTRY_WINDOW_MS = (() => {
 
 /**
  * Settling is deferred this long past the window close so a message sent just inside the window
- * but delivered a moment late still makes the tally instead of being clowned as too late.
+ * but delivered a moment late still makes the tally.
+ *
+ * This buys nobody extra time to post: eligibility is decided by the message's own `ts` against
+ * the fixed window, so the grace only covers Slack delivering an in-window message late.
  */
-export const ENTRY_GRACE_MS = 3 * 1000;
+export const ENTRY_GRACE_MS = 5 * 1000;
 
 /** Colon-wrapped emoji string for each game (used in message text). */
 export const GAME_EMOJI: Record<Game, string> = {
@@ -81,17 +85,36 @@ export function assignRandomPoints<T>(
     .sort((a, b) => b.points - a.points);
 }
 
-/** ms epoch of the last instant of the noon window (12:59:59.999 local) for a date. */
-export function noonWindowEndMs(date: string): number {
-  return DateTime.fromISO(date, { zone: TZ }).set({ hour: 12 }).endOf('hour').toMillis();
+/** ms epoch at which the entry window opens for a date: 12:00:00.000 local, every workday. */
+export function windowOpensAtMs(date: string): number {
+  return DateTime.fromISO(date, { zone: TZ }).set({ hour: 12 }).startOf('hour').toMillis();
 }
 
-export function inNoonWindow(tsSeconds: number): boolean {
-  const dt = DateTime.fromSeconds(tsSeconds, { zone: TZ });
-  const h = dt.hour;
-  if (h !== 12) return false;
-  // minute/second range automatically satisfied if hour is 12
-  return true;
+/**
+ * ms epoch at which the entry window shuts, exclusive: 12:05:00.000 local by default. A message
+ * whose `ts` is at or after this instant is late, however early it was delivered.
+ */
+export function windowClosesAtMs(date: string): number {
+  return windowOpensAtMs(date) + ENTRY_WINDOW_MS;
+}
+
+/**
+ * ms epoch at which a date's points are assigned — the window close plus the delivery grace.
+ * Fixed per date, so every game settles together whether or not anyone played it.
+ */
+export function windowSettlesAtMs(date: string): number {
+  return windowClosesAtMs(date) + ENTRY_GRACE_MS;
+}
+
+/**
+ * True when a Slack message timestamp falls inside the fixed entry window for its own local date.
+ * This is the only test of whether an entry counts: not when the event was delivered, not whether
+ * anyone else had posted first.
+ */
+export function inEntryWindow(tsSeconds: number): boolean {
+  const tsMs = tsSeconds * 1000;
+  const date = DateTime.fromSeconds(tsSeconds, { zone: TZ }).toISODate()!;
+  return tsMs >= windowOpensAtMs(date) && tsMs < windowClosesAtMs(date);
 }
 
 export function detectGameFromMessage(text: string, weekday: number): Game | null {
