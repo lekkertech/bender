@@ -37,20 +37,24 @@ mixes them.
 | `src/features/boom/rules.ts` | Pure date, emoji and window helpers for both modes. |
 | `src/features/boom/store.ts` | Persistence for both modes, plus the per-date mode stamp. |
 
-`BOOM_SCORING` accepts `random` (default) and `legacy`. Any other value is a
-startup error rather than a silent fallback, because a typo that silently selects
-the wrong game is worse than a failed boot.
+`BOOM_SCORING` is parsed in `loadConfig` into `Config.boomScoring`, following the
+existing pattern for every other setting. It accepts `random` (default) and
+`legacy`; any other value throws at startup rather than falling back, because a
+typo that silently selects the wrong game is worse than a failed boot.
 
 Changing the flag requires a restart. That is accepted: it makes single-mode
 operation structural rather than a property reviewers must keep verifying.
 
 ### Data model
 
-`StoreData` gains `scoring: Record<string, 'random' | 'legacy'>`. `Store.ensureDay`
-stamps a date the first time it is written, from the mode the `Store` was
-constructed with. The `Store` constructor takes that mode as an argument rather
-than reading the environment itself, so tests can drive both without mutating
-`process.env`.
+`StoreData` gains `scoring: Record<string, 'random' | 'legacy'>`. The write path
+stamps the date, not the constructor: `addEntry` stamps `random` and
+`addPlacement` stamps `legacy`, each only if the date is not already stamped.
+
+The `Store` therefore takes no mode argument. Which orchestration is installed
+already decides which write path runs, so the mode of a date is a fact about how
+it was recorded rather than a setting that has to be threaded through. A read
+never stamps: `ensureDay` is untouched.
 
 `Store.scoringFor(date)` resolves in this order:
 
@@ -64,9 +68,9 @@ already dispatches on it and needs no change: a random date scores its settled
 awards, a legacy date scores `PODIUM_WEIGHTS` over `computePodium`.
 
 `random_scoring_from` is retained for reading only. The constructor stops writing
-it and the cutover logic it carried is deleted, because the per-date stamp makes
-the deploy-day question moot: the day a flagged build boots is stamped with
-whatever mode it booted in, on that day's first entry.
+it and the deploy-day cutover logic it carried is deleted, because the per-date
+stamp makes that question moot: a date is stamped by whichever orchestration first
+records a play on it.
 
 ### Behaviour contract
 
@@ -94,6 +98,17 @@ The rollback guarantee is proved mechanically, not by inspection.
   Wednesday played under legacy. Monday's `awards` are byte-identical afterwards
   and the week's totals sum both days under their own rules.
 - A rejection test: an unrecognised `BOOM_SCORING` value fails registration.
+
+Four existing tests in `tests/store.test.ts` assert the constructor cutover this
+ADR deletes. Two of them (`starts random scoring on the deploy day itself`,
+`picks up entries already recorded when it boots mid-window`) assert
+`isRandomEra` before anything has been written, which the write-path stamp makes
+meaningless; they are rewritten to assert the stamp after a write. The third
+(`defers the cutover to tomorrow when the deploy day has already been announced`)
+tests behaviour that no longer exists and is deleted, its guarantee absorbed by
+the flip test above. The fourth (`keeps legacy 3-2-1 scoring for dates before the
+random-scoring cutover`) passes unchanged, because `addPlacement` stamps
+`legacy`.
 
 ## Consequences
 
