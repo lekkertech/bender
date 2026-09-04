@@ -69,7 +69,9 @@ See `docs/CONFIG.md` for more details.
   - `TIMEZONE=Africa/Johannesburg`
   - `ALLOWED_CHANNELS=C0919MX7KJS` (your `#capetown` channel ID)
   - Optionally `HOLIDAYS=YYYY-MM-DD,YYYY-MM-DD` to add extra dates
-  - Optionally `BOOM_ENTRY_WINDOW_MS=300000` (how long the window stays open from 12:00:00 local; points are assigned 5s after it shuts)
+  - Optionally `BOOM_SCORING=random` (`legacy` restores the 3-2-1 podium; takes effect at the next restart)
+  - Random mode only: `BOOM_ENTRY_WINDOW_MS=300000` (how long the window stays open from 12:00:00 local; points are assigned 5s after it shuts)
+  - Legacy mode only: `BOOM_ANNOUNCE_GRACE_MS=15000` (delay between a full podium and the announcement)
   - Chat fallback is configurable via `CHAT_*` variables. See docs/CONFIG.md.
 
 ## Holidays

@@ -82,17 +82,14 @@ posts its emoji inside one fixed window, then hands out points at random.
     If the bot restarts mid-window, the date is settled instead by a background sweep (every 30s)
     or by the next message in the channel, using the channel recorded with the entries. The sweep
     runs with `app.logger`, so failures on this path are logged rather than swallowed.
-- Migration:
-  - On first start, the Store stamps `random_scoring_from` with today's local date. Everything
-    before it keeps legacy 3-2-1 podium scoring, so historical leaderboards and crowns are
-    unchanged. Pre-cutover dates are never settled, swept or announced.
-  - The cutover is today, not tomorrow, because the legacy full-house announce trigger no longer
-    exists: a day left in the legacy era would be scored 3-2-1 and then never posted, so a morning
-    deploy would silently swallow that whole day.
-  - The exception is a deploy onto a day whose results are already out (`daily_announced[today]`
-    set by the old build). That date keeps legacy scoring and the cutover moves to tomorrow —
-    re-scoring it would drop its legacy points out of `weeklyTotals` and contradict a podium
-    people have already read.
+- Switching mechanism:
+  - `BOOM_SCORING=legacy` restores the 3-2-1 podium; `random` (the default) runs the randomised
+    points described above. The value is read once at startup, so a change needs a restart.
+  - Each date is stamped with the mechanism that first recorded a play on it, and is never
+    re-stamped. Switching the flag therefore leaves every earlier day scored and posted exactly as
+    it was, and a week spanning the change sums each day under its own rules.
+  - Dates carrying no stamp fall back to the `random_scoring_from` cutover written by an earlier
+    build, then to legacy, so historical leaderboards and crowns are unchanged.
   - Deploying mid-window is safe: entries already recorded for today are picked up when the window
     settles, rather than being stranded. Anyone who posted before the deploy is still an entrant.
   - A game recorded but not yet settled contributes 0 to the leaderboard — provisional points
@@ -118,12 +115,13 @@ Key points:
 - Timestamp use:
   - One entry per user per game/day: their earliest message by `ts`.
   - Tie-breakers: first by the raw Slack `ts` string, then by `user_id` for determinism.
-  - Legacy podium helpers (`getPlacements`, `placementsCount`, `PODIUM_WEIGHTS`) remain only to score dates before `random_scoring_from`.
+  - Podium helpers (`getPlacements`, `placementsCount`, `getPodiumMessages`, `PODIUM_WEIGHTS`) serve legacy mode and score any date stamped `legacy`.
 - Data model:
   - Raw message ledger stored under `messages[date][game]` (each item: `user_id`, `channel_id`, `message_ts`, `created_at`).
   - Settled scores stored under `awards[date][game]` (each item: `user_id`, `points`, `channel_id`, `message_ts`, `awarded_at`).
   - `medalled[date][game]` records when medal reactions were successfully applied.
-  - `random_scoring_from` marks the first date scored by random point assignment.
+  - `scoring[date]` records which mechanism scored a date, written by `addEntry` (`random`) or `addPlacement` (`legacy`).
+  - `random_scoring_from` is a read-only remnant of an earlier build's one-way cutover; nothing writes it any more.
   - Legacy `placements[date][game]` is retained for backward compatibility and used only when no `messages` exist for that date/game.
 - Migration:
   - No manual migration required. Existing historical podiums continue to work via the legacy `placements`.

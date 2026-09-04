@@ -13,7 +13,9 @@ Define configuration via environment variables and keep secrets out of source co
 - `FEATURES`: Comma-separated list of features to enable. Defaults to `boom,chat` if unset. Valid values: `boom`, `chat`.
 - `TIMEZONE`: Local timezone used for the entry window and day bucketing. Optional; default `Africa/Johannesburg`.
 - `HOLIDAYS`: Comma-separated extra `YYYY-MM-DD` holidays, on top of `data/holidays/za-<year>.json`. Optional.
-- `BOOM_ENTRY_WINDOW_MS`: How long the entry window stays open from 12:00:00 local, in milliseconds. Optional; default `300000` (5 minutes), i.e. entries count from 12:00:00 up to but not including 12:05:00. Points are assigned 5s after it shuts.
+- `BOOM_SCORING`: Which scoring mechanism the boom feature runs. `random` (default) gives every entrant in the fixed noon window a distinct point value; `legacy` restores the 3-2-1 podium. Any other value fails startup. A change takes effect at the next restart and applies only to days played after it: days already recorded keep the mechanism that scored them, so a week spanning a change sums each day under its own rules.
+- `BOOM_ENTRY_WINDOW_MS`: Random mode only. How long the entry window stays open from 12:00:00 local, in milliseconds. Optional; default `300000` (5 minutes), i.e. entries count from 12:00:00 up to but not including 12:05:00. Points are assigned 5s after it shuts.
+- `BOOM_ANNOUNCE_GRACE_MS`: Legacy mode only. Delay in milliseconds between a full podium and the announcement, so out-of-order Slack delivery can still re-rank. Optional; default `15000`. `0` announces immediately.
 - `OPENAI_API_KEY`: Enable Chat feature (AI) when set.
 - `OPENAI_MODEL`: Defaults to `gpt-4.1-nano`. Override to another model if desired.
 - `CHAT_ALLOWED_CHANNELS`: Optional override allowlist for the Chat feature; if unset, Chat responds in any channel the bot is a member of.
