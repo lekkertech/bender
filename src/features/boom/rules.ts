@@ -85,6 +85,31 @@ export function assignRandomPoints<T>(
     .sort((a, b) => b.points - a.points);
 }
 
+/** Boom is only played Mon-Fri, excluding public holidays. */
+export function isWorkdayDate(date: string): boolean {
+  const weekday = DateTime.fromISO(date, { zone: TZ }).weekday;
+  return weekday >= 1 && weekday <= 5 && !isHolidayDate(date);
+}
+
+/**
+ * ms epoch at which a date's noon window closes (13:00:00 local).
+ * After this instant no further entries can arrive, so the day's results are final
+ * whether or not every game filled its podium.
+ */
+export function noonWindowEndMs(date: string): number {
+  return DateTime.fromISO(date, { zone: TZ })
+    .set({ hour: 13, minute: 0, second: 0, millisecond: 0 })
+    .toMillis();
+}
+
+export function inNoonWindow(tsSeconds: number): boolean {
+  const dt = DateTime.fromSeconds(tsSeconds, { zone: TZ });
+  const h = dt.hour;
+  if (h !== 12) return false;
+  // minute/second range automatically satisfied if hour is 12
+  return true;
+}
+
 /** ms epoch at which the entry window opens for a date: 12:00:00.000 local, every workday. */
 export function windowOpensAtMs(date: string): number {
   return DateTime.fromISO(date, { zone: TZ }).set({ hour: 12 }).startOf('hour').toMillis();
