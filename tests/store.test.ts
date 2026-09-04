@@ -226,7 +226,11 @@ describe('Store random point assignment', () => {
   const BOOT = '2025-03-02T09:00:00';
   const NOW = '2025-03-03T12:10:00';
   const tsAt = (base: number, offset: number) => (base + offset).toFixed(6);
-  const inRandomEra = <T,>(fn: (store: Store) => T) => withStoreAt(BOOT, NOW, fn);
+  // The dates this suite plays are recorded through addPlacement, the legacy write path, so the
+  // random-era stamp is seeded rather than written. A real random-era day is stamped by addEntry.
+  const RANDOM_ERA = { '2025-03-03': 'random', '2025-03-04': 'random', '2025-03-07': 'random' };
+  const inRandomEra = <T,>(fn: (store: Store) => T, seed: any = {}) =>
+    withStoreAt(BOOT, NOW, fn, { ...seed, scoring: { ...RANDOM_ERA, ...(seed.scoring || {}) } });
 
   it('assigns each entrant a unique 1..n score, highest first, and never re-rolls', () =>
     inRandomEra((db) => {
@@ -425,16 +429,13 @@ describe('Store random point assignment', () => {
       // Both done
       db.markCrowned('2025-W10');
       expect(db.pendingAnnouncements()).toEqual([]);
-    }));
+    }, { scoring: { '2025-03-07': 'random' } }));
 
-  it('starts random scoring on the deploy day itself, so that day still gets scored', () =>
-    // Stamping tomorrow would strand the deploy day: it would be scored 3-2-1 but never announced,
-    // because the legacy full-house announce trigger no longer exists.
+  it('scores a day recorded through the random entry path', () =>
     withStoreAt('2025-03-03T09:00:00', '2025-03-03T12:30:00', (db) => {
+      db.addEntry('2025-03-03', 'boom', 'U1', tsAt(BASE, 0), 'C1');
+      db.addEntry('2025-03-03', 'boom', 'U2', tsAt(BASE, 1), 'C1');
       expect(db.isRandomEra('2025-03-03')).toBe(true);
-
-      db.addPlacement('2025-03-03', 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addPlacement('2025-03-03', 'boom', 'U2', tsAt(BASE, 1), 'C1');
 
       expect(db.resolveGame('2025-03-03', 'boom').map((a) => a.points).sort()).toEqual([1, 2]);
       expect(db.isResolved('2025-03-03', 'boom')).toBe(true);
@@ -450,6 +451,7 @@ describe('Store random point assignment', () => {
     }, {
       placements: { '2025-03-03': { boom: ['U1', 'U2'], hadeda: [], wednesday: [] } },
       counts: {}, daily_announced: {}, weekly_crowned: {}, weekly_kings: {},
+      scoring: { '2025-03-03': 'random' },
       messages: {
         '2025-03-03': {
           boom: [
@@ -461,36 +463,8 @@ describe('Store random point assignment', () => {
       },
     }));
 
-  it('defers the cutover to tomorrow when the deploy day has already been announced', () =>
-    // The one day that must not move: its 3-2-1 podium is already in the channel, so re-scoring it
-    // would drop those points out of weeklyTotals and contradict a message people have read.
-    withStoreAt('2025-03-03T13:30:00', '2025-03-03T13:30:00', (db) => {
-      expect(db.isRandomEra('2025-03-03')).toBe(false);
-      expect(db.isRandomEra('2025-03-04')).toBe(true);
-
-      db.addPlacement('2025-03-03', 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addPlacement('2025-03-03', 'boom', 'U2', tsAt(BASE, 1), 'C1');
-      db.addPlacement('2025-03-03', 'boom', 'U3', tsAt(BASE, 2), 'C1');
-
-      // Never settled, re-rolled, or swept
-      expect(db.resolveGame('2025-03-03', 'boom')).toEqual([]);
-      expect(db.isResolved('2025-03-03', 'boom')).toBe(false);
-      expect(db.duePending()).toEqual([]);
-      expect(db.pendingAnnouncements()).toEqual([]);
-
-      // …and keeps its legacy 3-2-1 points in the leaderboard
-      const totals = new Map(db.weeklyTotals('2025-03-03', '2025-03-03').map((r) => [r.user_id, r.points]));
-      expect(totals.get('U1')).toBe(3);
-      expect(totals.get('U2')).toBe(2);
-      expect(totals.get('U3')).toBe(1);
-    }, {
-      placements: {}, counts: {}, weekly_crowned: {}, weekly_kings: {}, messages: {},
-      daily_announced: { '2025-03-03': '2025-03-03T13:00:00.000+02:00' },
-    }));
-
-  it('keeps legacy 3-2-1 scoring for dates before the random-scoring cutover', () =>
+  it('keeps legacy 3-2-1 scoring for a date recorded through the podium path', () =>
     withStore((db) => {
-      // The cutover is stamped on first construction, so these 2025 dates are pre-cutover.
       const legacy = '2025-03-03';
       db.addPlacement(legacy, 'boom', 'U1', tsAt(BASE, 0), 'C1');
       db.addPlacement(legacy, 'boom', 'U2', tsAt(BASE, 1), 'C1');
@@ -514,5 +488,45 @@ describe('Store random point assignment', () => {
 
       db.resolveGame(DAY, 'boom');
       expect(db.weeklyTotals(DAY, DAY)).toEqual([{ user_id: 'U9', points: 1 }]);
+    }));
+});
+describe('scoring mode stamp', () => {
+  const BASE = 1740996000;
+  const tsAt = (base: number, offset: number) => `${base + offset}.000001`;
+
+  it('stamps a random entry random and a legacy placement legacy', () =>
+    withStore((db) => {
+      db.addEntry('2026-09-07', 'boom', 'U1', tsAt(BASE, 0), 'C1');
+      db.addPlacement('2026-09-08', 'boom', 'U1', tsAt(BASE, 1), 'C1');
+      expect(db.scoringFor('2026-09-07')).toBe('random');
+      expect(db.scoringFor('2026-09-08')).toBe('legacy');
+    }));
+
+  it('never re-stamps a date that is already stamped', () =>
+    withStore((db) => {
+      db.addEntry('2026-09-07', 'boom', 'U1', tsAt(BASE, 0), 'C1');
+      db.addPlacement('2026-09-07', 'boom', 'U2', tsAt(BASE, 1), 'C1');
+      expect(db.scoringFor('2026-09-07')).toBe('random');
+    }));
+
+  it('treats an unwritten date as legacy', () =>
+    withStore((db) => {
+      expect(db.scoringFor('2026-09-07')).toBe('legacy');
+    }));
+
+  it('reads random_scoring_from for dates written by the previous build', () =>
+    withStoreAt('2026-09-04T09:00:00', '2026-09-04T09:00:00', (db) => {
+      expect(db.scoringFor('2026-09-02')).toBe('random');
+      expect(db.scoringFor('2026-08-31')).toBe('legacy');
+    }, {
+      placements: {}, counts: {}, daily_announced: {}, weekly_crowned: {},
+      weekly_kings: {}, messages: {}, random_scoring_from: '2026-09-01',
+    }));
+
+  it('does not stamp a date that was only read', () =>
+    withStore((db) => {
+      db.entrants('2026-09-07', 'boom');
+      db.getCounts('2026-09-07');
+      expect(db.scoringFor('2026-09-07')).toBe('legacy');
     }));
 });

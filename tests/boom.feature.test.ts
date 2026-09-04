@@ -880,11 +880,8 @@ describe('Boom feature: announcement regressions', () => {
   });
 
   it('scores and posts the day it was deployed on', async () => {
-    // The cutover used to be stamped as *tomorrow*, which left the deploy day scored 3-2-1 with no
-    // announce path left to post it: a morning deploy silently swallowed that whole day.
     vi.setSystemTime(DateTime.fromISO('2025-03-10T09:00:00', { zone: ZONE }).toMillis());
     const t = setupFakeApp();
-    expect(readStore().random_scoring_from).toBe('2025-03-10');
 
     for (const u of ['U1', 'U2']) {
       await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs(`2025-03-10T12:00:0${u[1]}`) });
@@ -896,6 +893,7 @@ describe('Boom feature: announcement regressions', () => {
     expect(text).toContain('Daily Podium (2025-03-10)');
     expect(parseAwards(text, ':boom:').map((a) => a.points).sort()).toEqual([1, 2]);
     expect(readStore().daily_announced['2025-03-10']).toBeTruthy();
+    expect(readStore().scoring['2025-03-10']).toBe('random');
   });
 
   it('posts a single podium when two messages settle the day in the same tick', async () => {

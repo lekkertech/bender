@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DateTime } from 'luxon';
+import type { Scoring } from '../../env.js';
 import {
   assignRandomPoints,
   GAMES,
@@ -50,9 +51,12 @@ type StoreData = {
   // flushed before the reactions are sent: without this, a crash in between loses the medals.
   medalled?: Record<string, Partial<Record<Game, string>>>;
 
-  // First date scored by random point assignment. Dates strictly before this are scored with
-  // the legacy 3-2-1 podium weights so historical leaderboards/crowns stay intact.
+  // Read-only remnant of the previous build's one-way cutover. Dates it covers that carry no
+  // `scoring` stamp are resolved through it; nothing writes it any more.
   random_scoring_from?: string;
+
+  // Which mechanism scored each date, stamped by the write path that recorded the first play.
+  scoring?: Record<string, Scoring>;
 };
 
 const initialData = (): StoreData => ({
@@ -64,6 +68,7 @@ const initialData = (): StoreData => ({
   messages: {},
   awards: {},
   medalled: {},
+  scoring: {},
 });
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -101,6 +106,7 @@ function normalizeData(raw: Partial<StoreData & Record<string, unknown>>): Store
       : {},
     random_scoring_from:
       typeof (raw as any).random_scoring_from === 'string' ? ((raw as any).random_scoring_from as string) : undefined,
+    scoring: isObject((raw as any).scoring) ? ((raw as any).scoring as Record<string, Scoring>) : {},
   };
 
   // Backward-compat: if legacy 'wins' exists, try to populate placements structure shallowly
@@ -150,24 +156,6 @@ export class Store {
       this.flush();
     }
 
-    // Stamp the random-scoring cutover on first use so every date already in the ledger keeps its
-    // legacy 3-2-1 scoring and is never retroactively re-assigned random points.
-    //
-    // The cutover is *today* unless today's results are already out. Starting tomorrow instead
-    // would leave the deploy day in the legacy era with no announce path left to post it — the
-    // 3-2-1 trigger is gone — so a morning deploy would silently swallow that whole day. Entries
-    // already recorded today are simply picked up by the entry window when it settles.
-    //
-    // The one date that must not move is a day whose podium has already been posted: re-scoring it
-    // would drop its legacy points out of weeklyTotals and contradict a message people have read.
-    if (!this.data.random_scoring_from) {
-      const now = DateTime.now().setZone(TZ);
-      const today = now.toISODate()!;
-      this.data.random_scoring_from = this.hasDailyAnnounced(today)
-        ? now.plus({ days: 1 }).toISODate()!
-        : today;
-      this.flush();
-    }
   }
 
   private flush() {
@@ -252,6 +240,7 @@ export class Store {
    * the method will update legacy placements and return position by arrival order.
    */
   addPlacement(date: string, game: Game, user: string, ts?: string, channel_id?: string): number {
+    this.stampScoring(date, 'legacy');
     this.ensureDay(date);
 
     // If ts missing, fall back to legacy behavior (arrival-ordered)
@@ -340,6 +329,52 @@ export class Store {
     });
   }
 
+
+  /** Top-3 podium messages (earliest per user, sorted by ts) for reaction targeting. */
+  getPodiumMessages(date: string, game: Game): Winner[] {
+    this.ensureDay(date);
+    const msgs = this.getMessages(date, game);
+    if (!msgs.length) return [];
+    const earliestByUser = new Map<string, Winner>();
+    for (const m of msgs) {
+      const cur = earliestByUser.get(m.user_id);
+      if (!cur) {
+        earliestByUser.set(m.user_id, m);
+        continue;
+      }
+      const curT = parseSlackTs(cur.message_ts);
+      const newT = parseSlackTs(m.message_ts);
+      if (newT < curT || (newT === curT && m.message_ts < cur.message_ts)) {
+        earliestByUser.set(m.user_id, m);
+      }
+    }
+    return Array.from(earliestByUser.values())
+      .sort((a, b) => {
+        const at = parseSlackTs(a.message_ts);
+        const bt = parseSlackTs(b.message_ts);
+        if (at !== bt) return at - bt;
+        if (a.message_ts !== b.message_ts) return a.message_ts < b.message_ts ? -1 : 1;
+        return a.user_id < b.user_id ? -1 : a.user_id > b.user_id ? 1 : 0;
+      })
+      .slice(0, 3);
+  }
+
+  /** Every date with recorded activity, ascending. Used to find days still awaiting results. */
+  recordedDates(): string[] {
+    const set = new Set<string>([
+      ...Object.keys(this.data.messages || {}),
+      ...Object.keys(this.data.placements || {}),
+    ]);
+    return Array.from(set)
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+  }
+
+  /** True when at least one game on this date has a settled placement. */
+  hasAnyPlacement(date: string): boolean {
+    return GAMES.some((g) => this.computePodium(date, g).length > 0);
+  }
+
   /** Every unique entrant for a date+game (earliest message per user), sorted by ts. */
   entrants(date: string, game: Game): Winner[] {
     this.ensureDay(date);
@@ -372,6 +407,7 @@ export class Store {
     ts: string,
     channel_id: string,
   ): 'recorded' | 'duplicate' | 'redelivery' {
+    this.stampScoring(date, 'random');
     this.ensureDay(date);
     const prior = this.entryFor(date, game, user);
     if (prior) return prior.message_ts === ts ? 'redelivery' : 'duplicate';
@@ -390,9 +426,20 @@ export class Store {
    * legacy 3-2-1 podium and must never be settled — including the deploy day itself, which can
    * already hold a scored, announced podium from the previous build.
    */
-  isRandomEra(date: string): boolean {
+  scoringFor(date: string): Scoring {
+    const stamped = this.data.scoring?.[date];
+    if (stamped) return stamped;
     const from = this.data.random_scoring_from;
-    return !from || date >= from;
+    return from && date >= from ? 'random' : 'legacy';
+  }
+
+  private stampScoring(date: string, mode: Scoring) {
+    const byDate = (this.data.scoring ||= {});
+    if (!byDate[date]) byDate[date] = mode;
+  }
+
+  isRandomEra(date: string): boolean {
+    return this.scoringFor(date) === 'random';
   }
 
   /** True once points have been assigned for a date+game. Resolution is final. */
