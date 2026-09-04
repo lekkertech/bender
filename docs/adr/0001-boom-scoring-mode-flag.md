@@ -116,9 +116,13 @@ random-scoring cutover`) passes unchanged, because `addPlacement` stamps
   unless it lives in `rules.ts`, `store.ts` or `leaderboard.ts`.
 - The legacy orchestration is frozen. It exists to be identical to master, so it
   receives no improvements from the random path.
-- `store.ts` stays above the 300-line ceiling. It is 414 lines on master and 679
-  on the PR branch, so this change does not introduce the problem, and splitting
-  it is deliberately left out of scope.
+- `legacy/index.ts` is exempt from the project's complexity, method-length and
+  nesting ceilings, and its lint scope says so. It is master's file verbatim, and
+  its equivalence is asserted two ways: `diff` against `origin/master` showing only
+  the four adjustments above, and master's own test suite passing unmodified.
+  Refactoring it to satisfy a ceiling would break both proofs and defeat the
+  rollback guarantee this ADR exists to provide. It stays frozen until the flag is
+  removed, at which point the file is deleted rather than cleaned up.
 
 ## Alternatives rejected
 

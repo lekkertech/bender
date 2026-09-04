@@ -137,7 +137,6 @@ export class OpenAIClient {
   async chatCompletion(messages: ChatMessage[], opts: ChatCompletionOpts = {}): Promise<string> {
     if (!this.client) throw new Error('OpenAI not configured (missing OPENAI_API_KEY)');
 
-    const start = Date.now();
 
     try {
       const req: any = {
@@ -169,7 +168,6 @@ export class OpenAIClient {
       );
       const resp = await this.client.chat.completions.create(req, { signal: opts.abortSignal });
 
-      const took = Date.now() - start;
       opts.logger?.debug?.(
         { resp: JSON.stringify(resp) },
         'openai: chat.completions call'
