@@ -1,6 +1,18 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+export type Scoring = 'random' | 'legacy';
+
+const SCORING_MODES: readonly Scoring[] = ['random', 'legacy'];
+
+function parseScoring(val: string | undefined): Scoring {
+  const mode = (val || 'random') as Scoring;
+  if (!SCORING_MODES.includes(mode)) {
+    throw new Error(`BOOM_SCORING must be one of ${SCORING_MODES.join(', ')}; got "${val}"`);
+  }
+  return mode;
+}
+
 export type Config = {
   socketMode: boolean;
   botToken: string;
@@ -13,6 +25,7 @@ export type Config = {
 
   // New feature/config fields
   features: Set<string>; // e.g., {'boom','chat'}
+  boomScoring: Scoring;
   chatAllowedChannels?: Set<string>; // override for Chat bundle if provided
   chatConfigPath?: string; // JSON file with chat defaults, default data/chat-config.json
 
@@ -104,6 +117,7 @@ export function loadConfig(): Config {
 
     // New fields
     features,
+    boomScoring: parseScoring(process.env.BOOM_SCORING),
     chatAllowedChannels: chatAllowedChannelsArr.length ? new Set(chatAllowedChannelsArr) : undefined,
     chatConfigPath,
     openaiApiKey,
