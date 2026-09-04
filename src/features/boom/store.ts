@@ -1,47 +1,152 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { DateTime } from 'luxon';
+import type { Scoring } from '../../env.js';
 import {
   assignRandomPoints,
   GAMES,
   isFriday,
   neededGamesForDate,
   windowSettlesAtMs,
-  PODIUM_WEIGHTS,
   TZ,
   weekKeyFor,
-  weekStartEnd,
   type Game,
 } from './rules.js';
 import {
+  awardsFor,
+  datesRecorded,
+  earliestFor,
+  ensureDay,
+  isRandomEra,
+  isResolved,
+  latestCompletedWeekWinner,
+  loadStore,
+  messagesFor,
+  nested,
+  podiumFor,
+  scoringFor,
+  setNested,
+  weeklyTotals,
+  writeStore,
   RETRY_DAYS,
-  weekKeyForRange,
   type Award,
   type MessageRef,
-  type WeeklyKing,
+  type Scored,
+  type StoreData,
+  type WeekWinner,
   type Winner,
 } from './store-data.js';
-import { PodiumStore } from './podium-store.js';
 
 export type { Award } from './store-data.js';
 
-type Crown = { weekKey: string } & WeeklyKing;
-
 type DueSettlement = { date: string; game: Game; channel_id: string };
 
-type WeekWinner = { weekKey: string; start: string; end: string; winners: string[]; points: number };
+export class Store {
+  private file: string;
+  private data: StoreData;
 
-export class Store extends PodiumStore {
+  constructor(file = join(process.cwd(), 'data', 'store.json')) {
+    this.file = file;
+    this.data = loadStore(file);
+    if (!existsSync(file)) this.flush();
+  }
+
+  private flush() { writeStore(this.file, this.data); }
+
+  private appendMessage(date: string, game: Game, user: string, msg: MessageRef) {
+    const entry: Winner = {
+      user_id: user,
+      channel_id: msg.channel_id,
+      message_ts: msg.ts,
+      created_at: DateTime.now().toISO()!,
+    };
+    setNested(this.data.messages ||= {}, date, game, [...messagesFor(this.data, date, game), entry]);
+  }
+
+  incrementCount(date: string, game: Game): number {
+    ensureDay(this.data, date);
+    this.data.counts[date][game] = (this.data.counts[date][game] || 0) + 1;
+    this.flush();
+    return this.data.counts[date][game];
+  }
+
+  getCounts(date: string): Record<Game, number> {
+    ensureDay(this.data, date);
+    return { ...this.data.counts[date] };
+  }
+
+  scoringFor(date: string): Scoring { return scoringFor(this.data, date); }
+
+  isRandomEra(date: string): boolean { return isRandomEra(this.data, date); }
+
+  private stampScoring(date: string, mode: Scoring) {
+    const byDate = (this.data.scoring ||= {});
+    if (!byDate[date]) byDate[date] = mode;
+  }
+
+  private stamp(bucket: Record<string, string>, key: string) {
+    bucket[key] = DateTime.now().toISO()!;
+    this.flush();
+  }
+
+  markDailyAnnounced(date: string) { this.stamp(this.data.daily_announced, date); }
+
+  hasDailyAnnounced(date: string): boolean { return !!this.data.daily_announced[date]; }
+
+  markCrowned(weekKey: string) { this.stamp(this.data.weekly_crowned, weekKey); }
+
+  hasCrowned(weekKey: string): boolean { return !!this.data.weekly_crowned[weekKey]; }
+
+  addPlacement(date: string, game: Game, user: string, msg: MessageRef): number {
+    this.stampScoring(date, 'legacy');
+    ensureDay(this.data, date);
+    this.recordUnlessDuplicate(date, game, user, msg);
+    return this.podiumPositionFor(date, game, user, msg.ts);
+  }
+
+  private recordUnlessDuplicate(date: string, game: Game, user: string, msg: MessageRef) {
+    const arr = messagesFor(this.data, date, game);
+    if (arr.some((w) => w.user_id === user && w.message_ts === msg.ts)) return;
+    this.appendMessage(date, game, user, msg);
+    this.flush();
+  }
+
+  private podiumPositionFor(date: string, game: Game, user: string, ts: string): number {
+    const earliest = earliestFor(this.data, date, game).find((m) => m.user_id === user);
+    if (!earliest || earliest.message_ts !== ts) return 0;
+    return podiumFor(this.data, date, game).indexOf(user) + 1;
+  }
+
+  getPlacements(date: string, game: Game): string[] {
+    ensureDay(this.data, date);
+    return podiumFor(this.data, date, game);
+  }
+
+  placementsCount(date: string, game: Game): number { return this.getPlacements(date, game).length; }
+
+  getPodiumMessages(date: string, game: Game): Winner[] {
+    ensureDay(this.data, date);
+    return earliestFor(this.data, date, game).slice(0, 3);
+  }
+
+  recordedDates(): string[] { return datesRecorded(this.data); }
+
+  hasAnyPlacement(date: string): boolean {
+    return GAMES.some((g) => podiumFor(this.data, date, g).length > 0);
+  }
+
   entrants(date: string, game: Game): Winner[] {
-    this.ensureDay(date);
-    return this.earliestMessagesByUser(date, game);
+    ensureDay(this.data, date);
+    return earliestFor(this.data, date, game);
   }
 
   entryFor(date: string, game: Game, user: string): Winner | null {
-    return this.earliestMessagesByUser(date, game).find((m) => m.user_id === user) || null;
+    return earliestFor(this.data, date, game).find((m) => m.user_id === user) || null;
   }
 
   addEntry(date: string, game: Game, user: string, msg: MessageRef): 'recorded' | 'duplicate' | 'redelivery' {
     this.stampScoring(date, 'random');
-    this.ensureDay(date);
+    ensureDay(this.data, date);
     const prior = this.entryFor(date, game, user);
     if (prior) return prior.message_ts === msg.ts ? 'redelivery' : 'duplicate';
 
@@ -51,21 +156,16 @@ export class Store extends PodiumStore {
     return 'recorded';
   }
 
-  isResolved(date: string, game: Game): boolean {
-    return Array.isArray(this.data.awards?.[date]?.[game]);
-  }
+  isResolved(date: string, game: Game): boolean { return isResolved(this.data, date, game); }
 
-  getAwards(date: string, game: Game): Award[] {
-    const arr = this.data.awards?.[date]?.[game];
-    return Array.isArray(arr) ? [...arr].sort((a, b) => b.points - a.points) : [];
-  }
+  getAwards(date: string, game: Game): Award[] { return awardsFor(this.data, date, game); }
 
   resolveGame(date: string, game: Game, rng: () => number = Math.random, nowMs = Date.now()): Award[] {
-    this.ensureDay(date);
+    ensureDay(this.data, date);
     if (this.isResolved(date, game)) return this.getAwards(date, game);
     if (!this.isRandomEra(date)) return [];
 
-    const entrants = this.earliestMessagesByUser(date, game);
+    const entrants = earliestFor(this.data, date, game);
     if (!entrants.length && nowMs < windowSettlesAtMs(date)) return [];
 
     const awarded_at = DateTime.now().toISO()!;
@@ -77,9 +177,7 @@ export class Store extends PodiumStore {
       awarded_at,
     }));
 
-    const byDate = (this.data.awards ||= {});
-    const perGame = (byDate[date] ||= {});
-    perGame[game] = awards;
+    setNested(this.data.awards ||= {}, date, game, awards);
     this.flush();
     return awards;
   }
@@ -98,7 +196,7 @@ export class Store extends PodiumStore {
   private unsettledGames(date: string): DueSettlement[] {
     const needed = neededGamesForDate(date);
     return GAMES.filter((game) => !this.isResolved(date, game))
-      .map((game) => ({ game, first: this.earliestMessagesByUser(date, game)[0] }))
+      .map((game) => ({ game, first: earliestFor(this.data, date, game)[0] }))
       .filter(({ game, first }) => first || needed.includes(game))
       .map(({ game, first }) => ({
         date,
@@ -108,13 +206,11 @@ export class Store extends PodiumStore {
   }
 
   hasMedalled(date: string, game: Game): boolean {
-    return !!this.data.medalled?.[date]?.[game];
+    return !!nested<string>(this.data.medalled, date, game);
   }
 
   markMedalled(date: string, game: Game) {
-    const byDate = (this.data.medalled ||= {});
-    const perGame = (byDate[date] ||= {});
-    perGame[game] = DateTime.now().toISO()!;
+    setNested(this.data.medalled ||= {}, date, game, DateTime.now().toISO()!);
     this.flush();
   }
 
@@ -153,12 +249,12 @@ export class Store extends PodiumStore {
   }
 
   hasAnyEntry(date: string): boolean {
-    return GAMES.some((g) => this.earliestMessagesByUser(date, g).length > 0);
+    return GAMES.some((g) => earliestFor(this.data, date, g).length > 0);
   }
 
   channelForDate(date: string): string | null {
     for (const g of GAMES) {
-      const msg = this.earliestMessagesByUser(date, g).find((m) => m.channel_id);
+      const msg = earliestFor(this.data, date, g).find((m) => m.channel_id);
       if (msg) return msg.channel_id;
     }
     return null;
@@ -166,74 +262,15 @@ export class Store extends PodiumStore {
 
   setCrown(weekKey: string, winners: string[], points: number) {
     const kings = (this.data.weekly_kings ||= {});
-    const tsMs = Math.max(Date.now(), this.latestCrownMs() + 1);
-    kings[weekKey] = {
-      winners: [...winners],
-      points,
-      crowned_at: DateTime.fromMillis(tsMs).toISO()!,
-    };
+    kings[weekKey] = { winners: [...winners], points, crowned_at: DateTime.now().toISO()! };
     this.flush();
   }
 
-  private latestCrownMs(): number {
-    const times = Object.values(this.data.weekly_kings || {})
-      .filter((val) => val?.crowned_at)
-      .map((val) => DateTime.fromISO(val.crowned_at).toMillis())
-      .filter((ms) => Number.isFinite(ms));
-    return times.length ? Math.max(...times) : 0;
-  }
-
-  getLatestCrown(): Crown | null {
-    const crowned = Object.entries(this.data.weekly_kings || {}).filter(([, val]) => val?.crowned_at);
-    if (!crowned.length) return null;
-    const [weekKey, val] = crowned.reduce((best, cur) =>
-      DateTime.fromISO(cur[1].crowned_at) > DateTime.fromISO(best[1].crowned_at) ? cur : best,
-    );
-    return { weekKey, ...val };
-  }
-
   latestCompletedWeekWinner(currentDate: string): WeekWinner | null {
-    const base = DateTime.fromISO(currentDate, { zone: TZ });
-    for (let back = 1; back <= 8; back++) {
-      const prevDate = base.minus({ weeks: back }).toISODate()!;
-      const { start, end } = weekStartEnd(prevDate);
-      const totals = this.weeklyTotals(start, end);
-      if (!totals.length) continue;
-      const points = totals[0].points;
-      const winners = totals.filter((t) => t.points === points).map((t) => t.user_id);
-      return { weekKey: weekKeyFor(prevDate), start, end, winners, points };
-    }
-    return null;
+    return latestCompletedWeekWinner(this.data, currentDate);
   }
 
-  private scoreFor(date: string, game: Game): Array<{ user_id: string; points: number }> {
-    const awards = this.data.awards?.[date]?.[game];
-    if (Array.isArray(awards)) return awards.map((a) => ({ user_id: a.user_id, points: a.points }));
-    if (this.isRandomEra(date)) return [];
-    return this.computePodium(date, game).map((user_id, idx) => ({
-      user_id,
-      points: PODIUM_WEIGHTS[idx] || 0,
-    }));
-  }
-
-  private scoredRange(startDate: string, endDate: string): Array<{ user_id: string; points: number }> {
-    const out: Array<{ user_id: string; points: number }> = [];
-    const end = DateTime.fromISO(endDate);
-    for (let d = DateTime.fromISO(startDate); d <= end; d = d.plus({ days: 1 })) {
-      const date = d.toISODate()!;
-      out.push(...GAMES.flatMap((g) => this.scoreFor(date, g)));
-    }
-    return out;
-  }
-
-  weeklyTotals(startDate: string, endDate: string): Array<{ user_id: string; points: number }> {
-    const baselines = this.data.weekly_adjustments?.[weekKeyForRange(startDate)] || {};
-    const res = new Map<string, number>(Object.entries(baselines));
-    for (const { user_id, points } of this.scoredRange(startDate, endDate)) {
-      if (points > 0) res.set(user_id, (res.get(user_id) || 0) + points);
-    }
-    return Array.from(res.entries())
-      .map(([user_id, points]) => ({ user_id, points }))
-      .sort((a, b) => (b.points - a.points) || a.user_id.localeCompare(b.user_id));
+  weeklyTotals(startDate: string, endDate: string): Scored[] {
+    return weeklyTotals(this.data, startDate, endDate);
   }
 }

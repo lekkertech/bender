@@ -1,5 +1,6 @@
 import type { App } from '@slack/bolt';
 import type { Config } from '../../env.js';
+import { inChannelSet } from '../../util/channels.js';
 import { makeDisplayNameResolver, slackTsToSeconds } from '../../util/slack.js';
 import type { Store } from './store.js';
 import { localDayInfo, weekStartEnd } from './rules.js';
@@ -21,23 +22,18 @@ const RANK_LABELS: Record<number, string> = {
   10: ':keycap_ten:',
 };
 
-type NameResolver = (userId: string) => Promise<string>;
-type WeeklyRow = { user_id: string; points: number };
+export type NameResolver = ReturnType<typeof makeDisplayNameResolver>;
+export type WeeklyRow = ReturnType<Store['weeklyTotals']>[number];
 type CompletedWeek = { winners: string[] } | null;
 type Rendered = { block: any; fallback: string[] };
 type CatchUp = (client: any, logger?: any) => Promise<void>;
 type MentionContext = { event: any; client: any; logger?: any };
 
-function inAllowedChannel(cfg: Config, channel?: string): boolean {
-  if (!cfg.allowedChannels) return true;
-  return channel ? cfg.allowedChannels.has(channel) : false;
-}
-
 function rankLabel(rank: number): string {
   return RANK_LABELS[rank] || `${rank}.`;
 }
 
-function pointsUnit(points: number): string {
+export function pointsUnit(points: number): string {
   return `pt${points === 1 ? '' : 's'}`;
 }
 
@@ -89,7 +85,7 @@ function leaderboardTrigger(text: unknown): boolean {
 
 async function handleMention(cfg: Config, db: Store, catchUp: CatchUp, ctx: MentionContext) {
   const ev = ctx.event;
-  if (!inAllowedChannel(cfg, ev.channel)) return;
+  if (!inChannelSet(cfg.allowedChannels, ev.channel)) return;
   if (!leaderboardTrigger(ev.text)) return;
 
   const { date } = localDayInfo(slackTsToSeconds(String(ev.ts || '0')));

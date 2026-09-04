@@ -52,10 +52,7 @@ export const TZ = process.env.TIMEZONE || 'Africa/Johannesburg';
 export function localDayInfo(tsSeconds: number): DayInfo {
   const dt = DateTime.fromSeconds(tsSeconds, { zone: TZ });
   const date = dt.toISODate()!;
-  const weekday = dt.weekday; // 1..7
-  const isHoliday = isHolidayDate(date);
-  const isWorkday = weekday >= 1 && weekday <= 5 && !isHoliday;
-  return { date, weekday, isHoliday, isWorkday };
+  return { date, weekday: dt.weekday, isHoliday: isHolidayDate(date), isWorkday: isWorkdayDate(date) };
 }
 
 /** Games that must settle before the day can be announced. */
@@ -104,11 +101,7 @@ export function noonWindowEndMs(date: string): number {
 }
 
 export function inNoonWindow(tsSeconds: number): boolean {
-  const dt = DateTime.fromSeconds(tsSeconds, { zone: TZ });
-  const h = dt.hour;
-  if (h !== 12) return false;
-  // minute/second range automatically satisfied if hour is 12
-  return true;
+  return DateTime.fromSeconds(tsSeconds, { zone: TZ }).hour === 12;
 }
 
 /** ms epoch at which the entry window opens for a date: 12:00:00.000 local, every workday. */
@@ -182,7 +175,7 @@ export function isFriday(date: string): boolean {
 
 export function weekStartEnd(date: string): { start: string; end: string } {
   const dt = DateTime.fromISO(date, { zone: TZ });
-  const start = dt.startOf('week').plus({ days: 0 }); // ISO week starts Monday
-  const end = start.plus({ days: 4 }); // Monday..Friday
+  const start = dt.startOf('week');
+  const end = start.plus({ days: 4 });
   return { start: start.toISODate()!, end: end.toISODate()! };
 }

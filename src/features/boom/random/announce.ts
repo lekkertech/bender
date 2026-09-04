@@ -1,21 +1,12 @@
 import { makeDisplayNameResolver } from '../../../util/slack.js';
 import type { Store } from '../store.js';
 import { GAME_EMOJI, isFriday, neededGamesForDate, weekKeyFor, weekStartEnd, type Game } from '../rules.js';
-import type { Io } from './io.js';
+import { pointsUnit, type NameResolver, type WeeklyRow } from '../leaderboard.js';
+import type { Io, Settler } from './settle.js';
 
-export type Announcer = { db: Store; announcing: Set<string> };
-
-type NameResolver = (userId: string) => Promise<string>;
-type DayTarget = { date: string; channel: string; neededGames: Game[] };
+type Week = { start: string; end: string; board: WeeklyRow[] };
+type DayTarget = { date: string; channel: string; neededGames: Game[]; week: Week };
 type Owed = { results: boolean; crown: boolean };
-
-export function createAnnouncer(db: Store): Announcer {
-  return { db, announcing: new Set<string>() };
-}
-
-function isSettledAndFresh(db: Store, date: string, neededGames: Game[]): boolean {
-  return neededGames.every((g) => db.isResolved(date, g)) && db.isWithinRetryWindow(date);
-}
 
 function owedFor(db: Store, date: string): Owed {
   return {
@@ -24,23 +15,29 @@ function owedFor(db: Store, date: string): Owed {
   };
 }
 
-export async function announceDay(a: Announcer, io: Io, date: string) {
-  const neededGames = neededGamesForDate(date);
-  if (!isSettledAndFresh(a.db, date, neededGames)) return;
-  const owed = owedFor(a.db, date);
-  if ((!owed.results && !owed.crown) || a.announcing.has(date)) return;
+function weekFor(db: Store, date: string): Week {
+  const { start, end } = weekStartEnd(date);
+  return { start, end, board: db.weeklyTotals(start, end) };
+}
 
-  const channel = a.db.channelForDate(date);
+export async function announceDay(s: Settler, io: Io, date: string) {
+  const neededGames = neededGamesForDate(date);
+  if (!neededGames.every((g) => s.db.isResolved(date, g)) || !s.db.isWithinRetryWindow(date)) return;
+  const owed = owedFor(s.db, date);
+  if ((!owed.results && !owed.crown) || s.announcing.has(date)) return;
+
+  const channel = s.db.channelForDate(date);
   if (!channel) {
     io.logger?.warn?.({ date }, '[boom] cannot announce daily results: no channel recorded');
     return;
   }
 
-  a.announcing.add(date);
+  s.announcing.add(date);
   try {
-    await postOwed(a.db, io.client, { date, channel, neededGames }, owed);
+    const week = weekFor(s.db, date);
+    await postOwed(s.db, io.client, { date, channel, neededGames, week }, owed);
   } finally {
-    a.announcing.delete(date);
+    s.announcing.delete(date);
   }
 }
 
@@ -49,7 +46,7 @@ async function postOwed(db: Store, client: any, target: DayTarget, owed: Owed) {
     await postDailyResults(db, client, target);
     db.markDailyAnnounced(target.date);
   }
-  if (owed.crown) await postWeeklyCrown(db, client, target.date, target.channel);
+  if (owed.crown) await postWeeklyCrown(db, client, target);
 }
 
 async function postDailyResults(db: Store, client: any, target: DayTarget) {
@@ -58,7 +55,7 @@ async function postDailyResults(db: Store, client: any, target: DayTarget) {
   for (const game of target.neededGames) {
     lines.push(await podiumLine(db, getName, target.date, game));
   }
-  lines.push(...(await leaderboardLines(db, getName, target.date)));
+  lines.push(...(await leaderboardLines(getName, target.week)));
   await client.chat.postMessage({ channel: target.channel, text: lines.join('\n') });
 }
 
@@ -71,31 +68,28 @@ async function podiumLine(db: Store, getName: NameResolver, date: string, game: 
   return `• ${GAME_EMOJI[game]} ${rendered.join('  ')}`;
 }
 
-async function leaderboardLines(db: Store, getName: NameResolver, date: string): Promise<string[]> {
-  const { start, end } = weekStartEnd(date);
-  const leaderboard = db.weeklyTotals(start, end);
-  if (!leaderboard.length) return [];
+async function leaderboardLines(getName: NameResolver, week: Week): Promise<string[]> {
+  if (!week.board.length) return [];
   const lines = ['', 'Leaderboard (week-to-date):'];
   let rank = 1;
-  for (const row of leaderboard.slice(0, 10)) {
-    lines.push(`${rank}. ${await getName(row.user_id)} — ${row.points} pt${row.points === 1 ? '' : 's'}`);
+  for (const row of week.board.slice(0, 10)) {
+    lines.push(`${rank}. ${await getName(row.user_id)} — ${row.points} ${pointsUnit(row.points)}`);
     rank++;
   }
   return lines;
 }
 
-async function postWeeklyCrown(db: Store, client: any, date: string, channel: string) {
-  const wk = weekKeyFor(date);
-  const { start, end } = weekStartEnd(date);
-  const board = db.weeklyTotals(start, end);
+async function postWeeklyCrown(db: Store, client: any, target: DayTarget) {
+  const wk = weekKeyFor(target.date);
+  const { start, end, board } = target.week;
   if (board.length) {
     const topPoints = board[0].points;
     const winners = board.filter((r) => r.points === topPoints).map((r) => r.user_id);
     const crownLines = [
       `👑 Boom Game — Weekly Crown (${start} to ${end})`,
-      `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} pt${topPoints === 1 ? '' : 's'}`,
+      `Winner${winners.length > 1 ? 's' : ''}: ${winners.map((u) => `<@${u}>`).join(', ')} — ${topPoints} ${pointsUnit(topPoints)}`,
     ];
-    await client.chat.postMessage({ channel, text: crownLines.join('\n') });
+    await client.chat.postMessage({ channel: target.channel, text: crownLines.join('\n') });
     db.setCrown(wk, winners, topPoints);
   }
   db.markCrowned(wk);

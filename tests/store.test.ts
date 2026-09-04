@@ -59,13 +59,15 @@ describe('Store', () => {
   it('tracks placements, prevents duplicates and caps at 3', () =>
     withStore((db) => {
       const d = '2025-03-03';
-      expect(db.addPlacement(d, 'boom', 'U1')).toBe(1);
-      expect(db.addPlacement(d, 'boom', 'U2')).toBe(2);
-      expect(db.addPlacement(d, 'boom', 'U3')).toBe(3);
+      let ts = 1757498400.0;
+      const at = () => ({ ts: (ts += 0.001).toFixed(6), channel_id: 'C1' });
+      expect(db.addPlacement(d, 'boom', 'U1', at())).toBe(1);
+      expect(db.addPlacement(d, 'boom', 'U2', at())).toBe(2);
+      expect(db.addPlacement(d, 'boom', 'U3', at())).toBe(3);
       // Further placements are ignored
-      expect(db.addPlacement(d, 'boom', 'U4')).toBe(0);
+      expect(db.addPlacement(d, 'boom', 'U4', at())).toBe(0);
       // Duplicate user also ignored
-      expect(db.addPlacement(d, 'boom', 'U1')).toBe(0);
+      expect(db.addPlacement(d, 'boom', 'U1', at())).toBe(0);
 
       expect(db.placementsCount(d, 'boom')).toBe(3);
       expect(db.getPlacements(d, 'boom')).toEqual(['U1', 'U2', 'U3']);
@@ -89,17 +91,19 @@ describe('Store', () => {
       // Two dates in the same ISO week (Mon-Fri)
       const d1 = '2025-03-03'; // Mon
       const d2 = '2025-03-04'; // Tue
+      let ts = 1757498400.0;
+      const at = () => ({ ts: (ts += 0.001).toFixed(6), channel_id: 'C1' });
       // Monday placements
-      db.addPlacement(d1, 'boom', 'U1'); // +3
-      db.addPlacement(d1, 'boom', 'U2'); // +2
-      db.addPlacement(d1, 'boom', 'U3'); // +1
-      db.addPlacement(d1, 'hadeda', 'U2'); // +3
-      db.addPlacement(d1, 'hadeda', 'U3'); // +2
-      db.addPlacement(d1, 'hadeda', 'U4'); // +1
+      db.addPlacement(d1, 'boom', 'U1', at()); // +3
+      db.addPlacement(d1, 'boom', 'U2', at()); // +2
+      db.addPlacement(d1, 'boom', 'U3', at()); // +1
+      db.addPlacement(d1, 'hadeda', 'U2', at()); // +3
+      db.addPlacement(d1, 'hadeda', 'U3', at()); // +2
+      db.addPlacement(d1, 'hadeda', 'U4', at()); // +1
       // Wednesday placements
-      db.addPlacement(d2, 'wednesday', 'U1'); // +3
-      db.addPlacement(d2, 'wednesday', 'U4'); // +2
-      db.addPlacement(d2, 'wednesday', 'U5'); // +1
+      db.addPlacement(d2, 'wednesday', 'U1', at()); // +3
+      db.addPlacement(d2, 'wednesday', 'U4', at()); // +2
+      db.addPlacement(d2, 'wednesday', 'U5', at()); // +1
 
       const totals = db.weeklyTotals('2025-03-03', '2025-03-07');
       const map = new Map(totals.map((r) => [r.user_id, r.points]));
@@ -110,20 +114,6 @@ describe('Store', () => {
       expect(map.get('U5')).toBe(1); // 1 (Tue wed 3rd)
     }));
 
-  it('crown persistence stores latest crown and getLatestCrown returns the newest', () =>
-    withStore((db) => {
-      db.setCrown('2025-W10', ['U1'], 12);
-      const first = db.getLatestCrown();
-      expect(first).not.toBeNull();
-      expect(first!.weekKey).toBe('2025-W10');
-      // A later crown (called later) should become "latest"
-      db.setCrown('2025-W11', ['U2', 'U3'], 9);
-      const latest = db.getLatestCrown();
-      expect(latest).not.toBeNull();
-      expect(latest!.weekKey).toBe('2025-W11');
-      expect(latest!.winners).toEqual(['U2', 'U3']);
-      expect(latest!.points).toBe(9);
-    }));
   it('computes podium by earliest message ts, independent of arrival order', () =>
     withStore((db) => {
       const d = '2025-03-03';

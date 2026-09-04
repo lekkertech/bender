@@ -43,29 +43,6 @@ export type Config = {
   chatSystemPrompt: string;
 };
 
-type SlackTransport = Pick<
-  Config,
-  'socketMode' | 'botToken' | 'appToken' | 'signingSecret' | 'port' | 'logLevel'
->;
-
-type ChannelRouting = Pick<Config, 'allowedChannels' | 'chatAllowedChannels' | 'defaultReplyMode'>;
-
-type BoomSettings = Pick<Config, 'features' | 'boomScoring'>;
-
-type ChatSettings = Pick<
-  Config,
-  | 'chatConfigPath'
-  | 'openaiApiKey'
-  | 'openaiModel'
-  | 'chatEnabled'
-  | 'chatHistoryMaxTurns'
-  | 'chatHistoryMaxChars'
-  | 'chatInputMaxChars'
-  | 'chatReplyMaxTokens'
-  | 'chatTemperature'
-  | 'chatSystemPrompt'
->;
-
 function parseBool(val: string | undefined, fallback = false): boolean {
   if (val == null) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(val.toLowerCase());
@@ -83,7 +60,7 @@ function parseCsvSet(val: string | undefined): Set<string> | undefined {
   return items.length ? new Set(items) : undefined;
 }
 
-function loadSlackTransport(): SlackTransport {
+function loadSlackTransport() {
   const botToken = process.env.SLACK_BOT_TOKEN;
   if (!botToken) {
     throw new Error('Missing SLACK_BOT_TOKEN');
@@ -104,23 +81,7 @@ function loadSlackTransport(): SlackTransport {
   };
 }
 
-function loadChannelRouting(): ChannelRouting {
-  return {
-    allowedChannels: parseCsvSet(process.env.ALLOWED_CHANNELS),
-    chatAllowedChannels: parseCsvSet(process.env.CHAT_ALLOWED_CHANNELS),
-    defaultReplyMode: (process.env.DEFAULT_REPLY_MODE || 'channel') as Config['defaultReplyMode'],
-  };
-}
-
-function loadBoomSettings(): BoomSettings {
-  const featuresList = parseCsv(process.env.FEATURES || 'boom,chat').map((s) => s.toLowerCase());
-  return {
-    features: new Set(featuresList),
-    boomScoring: parseScoring(process.env.BOOM_SCORING),
-  };
-}
-
-function loadChatSettings(): ChatSettings {
+function loadChatSettings() {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   return {
     openaiApiKey,
@@ -138,10 +99,15 @@ function loadChatSettings(): ChatSettings {
 }
 
 export function loadConfig(): Config {
+  const transport = loadSlackTransport();
+  const featuresList = parseCsv(process.env.FEATURES || 'boom,chat').map((s) => s.toLowerCase());
   return {
-    ...loadSlackTransport(),
-    ...loadChannelRouting(),
-    ...loadBoomSettings(),
+    ...transport,
+    allowedChannels: parseCsvSet(process.env.ALLOWED_CHANNELS),
+    chatAllowedChannels: parseCsvSet(process.env.CHAT_ALLOWED_CHANNELS),
+    defaultReplyMode: (process.env.DEFAULT_REPLY_MODE || 'channel') as Config['defaultReplyMode'],
+    features: new Set(featuresList),
+    boomScoring: parseScoring(process.env.BOOM_SCORING),
     ...loadChatSettings(),
   };
 }

@@ -1,19 +1,24 @@
-import type { Store } from '../store.js';
+import type { Award, Store } from '../store.js';
 import { GAMES, neededGamesForDate, windowSettlesAtMs, type Game } from '../rules.js';
-import { logFailures, type Io } from './io.js';
-import { applyMedals } from './medals.js';
-import { announceDay, type Announcer } from './announce.js';
+import { announceDay } from './announce.js';
 
 const SWEEP_INTERVAL_MS = 30 * 1000;
+const PODIUM_MEDALS = ['first_place_medal', 'second_place_medal', 'third_place_medal'] as const;
+
+export type Io = { client: any; logger?: any };
 
 export type Settler = {
   db: Store;
-  announcer: Announcer;
+  announcing: Set<string>;
   timers: Map<string, ReturnType<typeof setTimeout>>;
 };
 
-export function createSettler(db: Store, announcer: Announcer): Settler {
-  return { db, announcer, timers: new Map() };
+export async function logFailures(io: Io, run: () => Promise<void>) {
+  try {
+    await run();
+  } catch (err) {
+    io.logger?.error?.(err);
+  }
 }
 
 export function scheduleSettle(s: Settler, io: Io, date: string) {
@@ -54,7 +59,7 @@ async function settleDay(s: Settler, io: Io, date: string) {
   for (const game of gamesToClose(s.db, date)) {
     await closeGame(s, io, date, game);
   }
-  await announceDay(s.announcer, io, date);
+  await announceDay(s, io, date);
 }
 
 async function settleDue(s: Settler, io: Io): Promise<Set<string>> {
@@ -70,7 +75,7 @@ async function settleDue(s: Settler, io: Io): Promise<Set<string>> {
 
 async function announceEach(s: Settler, io: Io, dates: Iterable<string>) {
   for (const date of dates) {
-    await logFailures(io, () => announceDay(s.announcer, io, date));
+    await logFailures(io, () => announceDay(s, io, date));
   }
 }
 
@@ -81,4 +86,35 @@ export async function catchUp(s: Settler, io: Io) {
     await logFailures(io, () => applyMedals(s.db, io, p.date, p.game));
   }
   await announceEach(s, io, s.db.pendingAnnouncements());
+}
+
+function isAlreadyReacted(err: any): boolean {
+  return err?.data?.error === 'already_reacted' || err?.message === 'already_reacted';
+}
+
+async function addMedal(client: any, award: Award, medal: string): Promise<unknown | null> {
+  if (!award.channel_id || !award.message_ts) return null;
+  try {
+    await client.reactions.add({ channel: award.channel_id, timestamp: award.message_ts, name: medal });
+    return null;
+  } catch (err) {
+    return isAlreadyReacted(err) ? null : err;
+  }
+}
+
+async function applyMedals(db: Store, io: Io, date: string, game: Game) {
+  if (db.hasMedalled(date, game)) return;
+  const awards = db.getAwards(date, game);
+  if (!awards.length) return;
+
+  let failed = false;
+  for (const [i, medal] of PODIUM_MEDALS.entries()) {
+    const award = awards[i];
+    if (!award) continue;
+    const err = await addMedal(io.client, award, medal);
+    if (!err) continue;
+    failed = true;
+    io.logger?.warn?.({ date, game, medal, err }, '[boom] failed to apply medal reaction');
+  }
+  if (!failed) db.markMedalled(date, game);
 }
