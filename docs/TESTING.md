@@ -6,6 +6,16 @@ Strategies and checklists to validate your Slack bot.
 - Socket Mode: run locally with `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`; no public URL needed.
 - Events API: expose a temporary tunnel (e.g., ngrok/Cloudflared) for Slack to reach your `POST /slack/events` endpoint; ensure raw body is available for signature verification.
 
+## Scoring-mode regression suites
+
+`tests/legacy.feature.test.ts` and `tests/legacy.race.test.ts` are copied verbatim from the
+3-2-1 podium build, with one line added to each `cfg` literal to select `BOOM_SCORING=legacy`.
+They exist to prove that switching the flag back reproduces that build's behaviour exactly.
+
+Never edit an assertion, test body or harness function in those two files to make them pass. A
+failure there means the legacy orchestration or the store has drifted, and the fix belongs in
+`src/`.
+
 ## Unit Tests
 - Handlers: given an event payload, assert correct Web API calls are issued.
 - Utilities: signature verification, dedup, allowlist checks.
@@ -22,14 +32,26 @@ Strategies and checklists to validate your Slack bot.
   - With `FEATURES=chat`, Boom scoring and leaderboard are inactive.
 - Channel allowlist:
   - Messages in channels not listed in `ALLOWED_CHANNELS` (or `CHAT_ALLOWED_CHANNELS` for Chat) are ignored.
-- Boom module:
-  - Noon window: posting `:boom:` / `💥`, `:hadeda-boom:`, and (Wed only) `:wednesday-boom:` between 12:00–12:59 records counts and podiums.
-  - Outside window or after podium full/day closed: bot adds `:clown_face:` reaction.
-  - Daily podium auto-post when each required game reaches 3 unique entrants.
-  - Daily podium also posts once the noon window closes (13:00 local) for a day that fell short, driven by the next message in the channel or a 60s sweep; games with no entrants render `— no entries`.
-  - Friday crown posts with the Friday podium; the crown is persisted only after the message succeeds.
+- Boom module (`BOOM_SCORING=random`, the default):
+  - Entry window: posting `:boom:` / `💥`, `:hadeda-boom:`, and (Wed only) `:wednesday-boom:` between 12:00:00 and 12:04:59 records counts and entries.
+  - One fixed window per day, 12:00:00–12:05:00, shared by every emoji. It opens at noon whether or not anyone posts: a first entry at 12:04:00 gets 60 seconds, not a fresh 5 minutes. Each accepted entry is reacted to with `:white_check_mark:` straight away, and nothing is scored until the window shuts.
+  - When the window closes, each of the `n` unique entrants gets a unique random amount between 1 and `n` (verify no duplicate amounts and no gaps), and the top three earners get medal reactions.
+  - Posting the same emoji again after your first entry: `:clown_face:`, no acknowledgement, and `counts` unchanged (still one per entrant).
+  - Outside window, after a game's window closed, or after the day is closed: bot adds `:clown_face:` reaction and awards nothing.
+  - Daily results auto-post once every required game for the day has settled.
+  - Friday crown posts weekly winners right after the Friday daily results.
+  - Entries at 11:59:59 or 12:05:00 are clowned, as is anything later in the noon hour: only 12:00:00–12:04:59 counts, judged on the message timestamp rather than delivery time.
+  - Restart mid-window: after restarting the bot, the pending window still settles (on the next message in the channel, or within ~30s via the background sweep).
+  - Deploy day: the day you deploy is scored and announced under whichever mechanism `BOOM_SCORING` selects, including entries recorded before the deploy. Each date is stamped with the mechanism that first recorded a play on it and is never re-scored, so switching `BOOM_SCORING` and restarting leaves every earlier day exactly as it was posted.
+  - A required game nobody played renders `— no entries`, and the day still announces at 12:05:05 — or, if the process was down then, on the next message in the channel or the 30s sweep.
   - Weekend/holiday "Boom isn't played today" notice is posted once per date, not once per poster.
+  - The crown is persisted only after its message succeeds; a failed crown post leaves the week uncrowned and retryable.
   - `@bot leaderboard` prints week-to-date leaderboard with current king(s).
+- Boom module (`BOOM_SCORING=legacy`):
+  - The entry window is the whole noon hour, 12:00:00-12:59:59, and a game closes as soon as three unique users have entered it.
+  - First, second and third by message timestamp score 3, 2 and 1; a fourth unique entrant is clowned on arrival.
+  - Results are held for `BOOM_ANNOUNCE_GRACE_MS` after the podium fills, so a late-delivered earlier entry can still re-rank.
+  - A day that closes short of a full podium still announces, via the background sweep or the next message in the channel.
 - Chat module (app mentions):
   - `@bot hello there` yields an AI reply in-channel by default (threaded if `DEFAULT_REPLY_MODE=thread`).
   - `@bot help` prints brief usage depending on your system prompt.

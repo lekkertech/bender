@@ -17,6 +17,51 @@
       "U0916NM9Y31": 13,
       "U09217VM6KA": 4
     }
+  },
+  "random_scoring_from": "2025-09-08",
+  "messages": {
+    "2025-09-08": {
+      "boom": [
+        {
+          "user_id": "U09191SGXCK",
+          "channel_id": "C0123456789",
+          "message_ts": "1757325600.100200",
+          "created_at": "2025-09-08T10:00:00.100Z"
+        },
+        {
+          "user_id": "U097D4LEYQY",
+          "channel_id": "C0123456789",
+          "message_ts": "1757325601.400500",
+          "created_at": "2025-09-08T10:00:01.400Z"
+        }
+      ],
+      "hadeda": [],
+      "wednesday": []
+    }
+  },
+  "awards": {
+    "2025-09-08": {
+      "boom": [
+        {
+          "user_id": "U097D4LEYQY",
+          "points": 2,
+          "channel_id": "C0123456789",
+          "message_ts": "1757325601.400500",
+          "awarded_at": "2025-09-08T10:05:00.100Z"
+        },
+        {
+          "user_id": "U09191SGXCK",
+          "points": 1,
+          "channel_id": "C0123456789",
+          "message_ts": "1757325600.100200",
+          "awarded_at": "2025-09-08T10:05:00.100Z"
+        }
+      ]
+    }
+  },
+  "medalled": {
+    "2025-09-08": {
+      "boom": "2025-09-08T10:05:00.400Z"
+    }
   }
 }
-

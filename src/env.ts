@@ -1,6 +1,21 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+export type Scoring = 'random' | 'legacy';
+
+const SCORING_MODES: readonly Scoring[] = ['random', 'legacy'];
+
+const DEFAULT_CHAT_SYSTEM_PROMPT =
+  'You are a helpful Slack bot. Keep replies concise, actionable, and friendly. Use plain text suitable for Slack. Avoid long lists and code fences unless explicitly requested.';
+
+function parseScoring(val: string | undefined): Scoring {
+  const mode = (val || 'random') as Scoring;
+  if (!SCORING_MODES.includes(mode)) {
+    throw new Error(`BOOM_SCORING must be one of ${SCORING_MODES.join(', ')}; got "${val}"`);
+  }
+  return mode;
+}
+
 export type Config = {
   socketMode: boolean;
   botToken: string;
@@ -11,21 +26,19 @@ export type Config = {
   allowedChannels?: Set<string>;
   defaultReplyMode: 'thread' | 'channel';
 
-  // New feature/config fields
-  features: Set<string>; // e.g., {'boom','chat'}
-  chatAllowedChannels?: Set<string>; // override for Chat bundle if provided
-  chatConfigPath?: string; // JSON file with chat defaults, default data/chat-config.json
+  features: Set<string>;
+  boomScoring: Scoring;
+  chatAllowedChannels?: Set<string>;
+  chatConfigPath?: string;
 
-  // OpenAI configuration
   openaiApiKey?: string;
-  openaiModel: string; // default: gpt-4.1-nano
+  openaiModel: string;
 
-  // Chat fallback configuration (in-memory, channel-scoped)
-  chatEnabled: boolean; // default true when OPENAI_API_KEY is present, unless explicitly disabled
-  chatHistoryMaxTurns: number; // number of dialogue turns (approx. user+assistant pairs) to keep
-  chatHistoryMaxChars: number; // max characters across transcript kept in memory
-  chatInputMaxChars: number; // clip each incoming user message to this many chars before storing
-  chatReplyMaxTokens: number; // OpenAI max_output_tokens
+  chatEnabled: boolean;
+  chatHistoryMaxTurns: number;
+  chatHistoryMaxChars: number;
+  chatInputMaxChars: number;
+  chatReplyMaxTokens: number;
   chatTemperature: number;
   chatSystemPrompt: string;
 };
@@ -35,87 +48,66 @@ function parseBool(val: string | undefined, fallback = false): boolean {
   return ['1', 'true', 'yes', 'on'].includes(val.toLowerCase());
 }
 
-export function loadConfig(): Config {
+function parseCsv(val: string | undefined): string[] {
+  return (val || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function parseCsvSet(val: string | undefined): Set<string> | undefined {
+  const items = parseCsv(val);
+  return items.length ? new Set(items) : undefined;
+}
+
+function loadSlackTransport() {
   const botToken = process.env.SLACK_BOT_TOKEN;
-  const appToken = process.env.SLACK_APP_TOKEN;
-  const signingSecret = process.env.SLACK_SIGNING_SECRET;
-  const port = Number(process.env.PORT || 3000);
-  const logLevel = (process.env.LOG_LEVEL || 'info') as Config['logLevel'];
-
-  // Channel allowlists
-  const allowedChannelsArr = (process.env.ALLOWED_CHANNELS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const chatAllowedChannelsArr = (process.env.CHAT_ALLOWED_CHANNELS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  // Reply mode
-  const defaultReplyMode = (process.env.DEFAULT_REPLY_MODE || 'channel') as Config['defaultReplyMode'];
-
-  // Features toggle (default both enabled)
-  const featuresStr = process.env.FEATURES || 'boom,chat';
-  const featuresList = featuresStr
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const features = new Set(featuresList);
-
-  // OpenAI config
-  const openaiApiKey = process.env.OPENAI_API_KEY;
-  const openaiModel = process.env.OPENAI_MODEL || 'gpt-4.1-nano';
-
-  // Chat config file path (optional defaults for chat)
-  const chatConfigPath = process.env.CHAT_CONFIG || 'data/chat-config.json';
-
-  // Chat fallback config (in-memory)
-  const chatEnabled = parseBool(process.env.CHAT_ENABLED, !!openaiApiKey);
-  const chatHistoryMaxTurns = Number(process.env.CHAT_HISTORY_MAX_TURNS || 20);
-  const chatHistoryMaxChars = Number(process.env.CHAT_HISTORY_MAX_CHARS || 16000);
-  const chatInputMaxChars = Number(process.env.CHAT_INPUT_MAX_CHARS || 4000);
-  const chatReplyMaxTokens = Number(process.env.CHAT_REPLY_MAX_TOKENS || 512);
-  const chatTemperature =
-    process.env.CHAT_TEMPERATURE != null ? Number(process.env.CHAT_TEMPERATURE) : 0.7;
-  const chatSystemPrompt =
-    process.env.CHAT_SYSTEM_PROMPT ||
-    'You are a helpful Slack bot. Keep replies concise, actionable, and friendly. Use plain text suitable for Slack. Avoid long lists and code fences unless explicitly requested.';
-
   if (!botToken) {
     throw new Error('Missing SLACK_BOT_TOKEN');
   }
-
+  const appToken = process.env.SLACK_APP_TOKEN;
+  const signingSecret = process.env.SLACK_SIGNING_SECRET;
   const socketMode = !!appToken && !parseBool(process.env.FORCE_HTTP, false);
-
   if (!socketMode && !signingSecret) {
     throw new Error('HTTP (Events API) requires SLACK_SIGNING_SECRET. Set SLACK_APP_TOKEN to use Socket Mode.');
   }
-
   return {
     socketMode,
     botToken,
     appToken,
     signingSecret,
-    port,
-    logLevel,
-    allowedChannels: allowedChannelsArr.length ? new Set(allowedChannelsArr) : undefined,
-    defaultReplyMode,
+    port: Number(process.env.PORT || 3000),
+    logLevel: (process.env.LOG_LEVEL || 'info') as Config['logLevel'],
+  };
+}
 
-    // New fields
-    features,
-    chatAllowedChannels: chatAllowedChannelsArr.length ? new Set(chatAllowedChannelsArr) : undefined,
-    chatConfigPath,
+function loadChatSettings() {
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  return {
     openaiApiKey,
-    openaiModel,
+    openaiModel: process.env.OPENAI_MODEL || 'gpt-4.1-nano',
+    chatConfigPath: process.env.CHAT_CONFIG || 'data/chat-config.json',
+    chatEnabled: parseBool(process.env.CHAT_ENABLED, !!openaiApiKey),
+    chatHistoryMaxTurns: Number(process.env.CHAT_HISTORY_MAX_TURNS || 20),
+    chatHistoryMaxChars: Number(process.env.CHAT_HISTORY_MAX_CHARS || 16000),
+    chatInputMaxChars: Number(process.env.CHAT_INPUT_MAX_CHARS || 4000),
+    chatReplyMaxTokens: Number(process.env.CHAT_REPLY_MAX_TOKENS || 512),
+    chatTemperature:
+      process.env.CHAT_TEMPERATURE != null ? Number(process.env.CHAT_TEMPERATURE) : 0.7,
+    chatSystemPrompt: process.env.CHAT_SYSTEM_PROMPT || DEFAULT_CHAT_SYSTEM_PROMPT,
+  };
+}
 
-    // Chat fallback (in-memory)
-    chatEnabled,
-    chatHistoryMaxTurns,
-    chatHistoryMaxChars,
-    chatInputMaxChars,
-    chatReplyMaxTokens,
-    chatTemperature,
-    chatSystemPrompt,
+export function loadConfig(): Config {
+  const transport = loadSlackTransport();
+  const featuresList = parseCsv(process.env.FEATURES || 'boom,chat').map((s) => s.toLowerCase());
+  return {
+    ...transport,
+    allowedChannels: parseCsvSet(process.env.ALLOWED_CHANNELS),
+    chatAllowedChannels: parseCsvSet(process.env.CHAT_ALLOWED_CHANNELS),
+    defaultReplyMode: (process.env.DEFAULT_REPLY_MODE || 'channel') as Config['defaultReplyMode'],
+    features: new Set(featuresList),
+    boomScoring: parseScoring(process.env.BOOM_SCORING),
+    ...loadChatSettings(),
   };
 }

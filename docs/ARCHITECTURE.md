@@ -36,6 +36,34 @@ This document describes a simple, reliable architecture for a Slack channel bot.
 6. Respond: Prefer thread replies by default; fall back to channel.
 7. Observe: Log, metric counters, and error capture.
 
+## Boom Feature
+
+The boom game ships two scoring mechanisms. `BOOM_SCORING` selects one at startup and exactly one
+set of handlers is installed; there is no runtime branch between them.
+
+| Path | Responsibility |
+|---|---|
+| `src/features/boom/index.ts` | Constructs the `Store` and delegates to one orchestration. |
+| `src/features/boom/legacy/index.ts` | 3-2-1 podium: the noon hour is the window, a game closes on three unique entrants, announcement is held for `BOOM_ANNOUNCE_GRACE_MS`. |
+| `src/features/boom/random/index.ts` | Randomised points: a fixed 12:00-12:05 window, every unique entrant draws a distinct value in 1..n when it settles. |
+| `src/features/boom/random/announce.ts` | The randomised path's results post and Friday crown. |
+| `src/features/boom/leaderboard.ts` | The `app_mention` leaderboard, shared by both, parameterised by the mode's catch-up. |
+| `src/features/boom/rules.ts` | Pure date, emoji and window helpers for both mechanisms. |
+| `src/features/boom/store.ts` | JSON persistence for both, plus the per-date mode stamp. |
+
+### How a date knows which mechanism scored it
+
+`Store.addEntry` stamps a date `random` and `Store.addPlacement` stamps it `legacy`, each only if
+the date is not already stamped. The write path names the mechanism, so the `Store` needs no mode
+argument and a read never stamps.
+
+`Store.scoringFor(date)` reads that stamp, falling back to the `random_scoring_from` cutover left
+by an earlier build, then to `legacy`. `weeklyTotals` dispatches per date through it, so a week
+spanning a `BOOM_SCORING` change sums each day under the rules that scored it. No day is ever
+part-one and part-the-other, and changing the flag cannot re-score a day already played.
+
+The decision and its alternatives are recorded in `docs/adr/0001-boom-scoring-mode-flag.md`.
+
 ## Recommended Conventions
 - Acknowledge fast: never block ack on long work.
 - Thread replies: respond in the same thread (`thread_ts`) when present.

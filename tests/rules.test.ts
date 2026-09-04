@@ -1,10 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { DateTime } from 'luxon';
 import {
+  assignRandomPoints,
   detectGameFromMessage,
   detectAnyGameEmoji,
-  inNoonWindow,
+  ENTRY_GRACE_MS,
+  ENTRY_WINDOW_MS,
+  inEntryWindow,
   localDayInfo,
+  neededGamesForDate,
+  windowClosesAtMs,
+  windowOpensAtMs,
+  windowSettlesAtMs,
   weekKeyFor,
   isFriday,
   weekStartEnd,
@@ -39,16 +46,15 @@ describe('rules.ts basics', () => {
     expect(detectAnyGameEmoji('something else')).toBeNull();
   });
 
-  it('inNoonWindow only true during 12:00 hour local', () => {
-    const before = toSec('2025-03-03T11:59:59');
-    const atNoon = toSec('2025-03-03T12:00:00');
-    const nearEnd = toSec('2025-03-03T12:59:59');
-    const after = toSec('2025-03-03T13:00:00');
-
-    expect(inNoonWindow(before)).toBe(false);
-    expect(inNoonWindow(atNoon)).toBe(true);
-    expect(inNoonWindow(nearEnd)).toBe(true);
-    expect(inNoonWindow(after)).toBe(false);
+  it('inEntryWindow accepts only 12:00:00 to 12:04:59 local', () => {
+    // The window is fixed: it opens at noon whether or not anyone posts, and shuts 5 minutes on.
+    expect(inEntryWindow(toSec('2025-03-03T11:59:59'))).toBe(false);
+    expect(inEntryWindow(toSec('2025-03-03T12:00:00'))).toBe(true);
+    expect(inEntryWindow(toSec('2025-03-03T12:04:59'))).toBe(true);
+    expect(inEntryWindow(toSec('2025-03-03T12:05:00'))).toBe(false);
+    // Being merely inside the noon hour is no longer enough.
+    expect(inEntryWindow(toSec('2025-03-03T12:30:00'))).toBe(false);
+    expect(inEntryWindow(toSec('2025-03-03T12:59:59'))).toBe(false);
   });
 
   it('localDayInfo gives ISO weekday and workday flags', () => {
@@ -83,5 +89,75 @@ describe('rules.ts basics', () => {
     // Friday check on 2025-03-07
     expect(isFriday('2025-03-07')).toBe(true);
     expect(isFriday('2025-03-06')).toBe(false);
+  });
+
+  it('neededGamesForDate adds the wednesday game only on Wednesdays', () => {
+    expect(neededGamesForDate('2025-03-03')).toEqual(['boom', 'hadeda']); // Mon
+    expect(neededGamesForDate('2025-03-05')).toEqual(['boom', 'hadeda', 'wednesday']); // Wed
+    expect(neededGamesForDate('2025-03-07')).toEqual(['boom', 'hadeda']); // Fri
+  });
+
+  it('the entry window is 5 minutes, settling 5 seconds later', () => {
+    expect(ENTRY_WINDOW_MS).toBe(5 * 60 * 1000);
+    expect(ENTRY_GRACE_MS).toBe(5 * 1000);
+  });
+
+  it('the window runs 12:00:00 to 12:05:00 local and settles at 12:05:05', () => {
+    const iso = (ms: number) => DateTime.fromMillis(ms, { zone: ZONE }).toISO();
+    expect(iso(windowOpensAtMs('2025-03-03'))).toBe('2025-03-03T12:00:00.000+02:00');
+    expect(iso(windowClosesAtMs('2025-03-03'))).toBe('2025-03-03T12:05:00.000+02:00');
+    expect(iso(windowSettlesAtMs('2025-03-03'))).toBe('2025-03-03T12:05:05.000+02:00');
+
+    // The close is exclusive: the last instant that still counts is one ms before it.
+    const close = windowClosesAtMs('2025-03-03');
+    expect(inEntryWindow((close - 1) / 1000)).toBe(true);
+    expect(inEntryWindow(close / 1000)).toBe(false);
+  });
+});
+
+describe('assignRandomPoints', () => {
+  it('gives each of n entrants a unique amount between 1 and n, highest first', () => {
+    for (const n of [1, 2, 3, 9, 25]) {
+      const entrants = Array.from({ length: n }, (_, i) => `U${i}`);
+      const result = assignRandomPoints(entrants);
+
+      // Every entrant appears exactly once
+      expect(result.length).toBe(n);
+      expect(new Set(result.map((r) => r.entrant)).size).toBe(n);
+      // Points are exactly the permutation 1..n — unique, no gaps
+      expect(result.map((r) => r.points).sort((a, b) => a - b)).toEqual(
+        Array.from({ length: n }, (_, i) => i + 1),
+      );
+      // Sorted highest points first
+      expect(result.map((r) => r.points)).toEqual([...result.map((r) => r.points)].sort((a, b) => b - a));
+      expect(result[0].points).toBe(n);
+    }
+  });
+
+  it('does not always hand the top score to the same entrant', () => {
+    // 200 draws over 5 entrants: a fixed-order implementation would give one entrant every win.
+    const winners = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      winners.add(assignRandomPoints(['A', 'B', 'C', 'D', 'E'])[0].entrant);
+    }
+    expect(winners.size).toBeGreaterThan(1);
+  });
+
+  it('is deterministic for a given rng and tolerates an rng returning 1', () => {
+    const zeros = assignRandomPoints(['A', 'B', 'C'], () => 0);
+    expect(zeros).toEqual([
+      { entrant: 'B', points: 3 },
+      { entrant: 'A', points: 2 },
+      { entrant: 'C', points: 1 },
+    ]);
+
+    // rng() === 1 must stay in range rather than swapping past the end of the array
+    const ones = assignRandomPoints(['A', 'B', 'C'], () => 1);
+    expect(ones.map((r) => r.points).sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    expect(new Set(ones.map((r) => r.entrant)).size).toBe(3);
+  });
+
+  it('returns nothing for no entrants', () => {
+    expect(assignRandomPoints([])).toEqual([]);
   });
 });

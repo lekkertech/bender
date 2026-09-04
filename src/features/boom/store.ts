@@ -1,89 +1,45 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { DateTime } from 'luxon';
-import { GAMES, PODIUM_WEIGHTS, TZ, weekKeyFor, weekStartEnd, type Game } from './rules.js';
+import type { Scoring } from '../../env.js';
+import {
+  assignRandomPoints,
+  GAMES,
+  isFriday,
+  neededGamesForDate,
+  windowSettlesAtMs,
+  TZ,
+  weekKeyFor,
+  type Game,
+} from './rules.js';
+import {
+  awardsFor,
+  datesRecorded,
+  earliestFor,
+  ensureDay,
+  isRandomEra,
+  isResolved,
+  latestCompletedWeekWinner,
+  loadStore,
+  messagesFor,
+  nested,
+  podiumFor,
+  scoringFor,
+  setNested,
+  weeklyTotals,
+  writeStore,
+  RETRY_DAYS,
+  type Award,
+  type MessageRef,
+  type Scored,
+  type StoreData,
+  type WeekWinner,
+  type Winner,
+} from './store-data.js';
 
-type Winner = { user_id: string; channel_id: string; message_ts: string; created_at: string };
+export type { Award } from './store-data.js';
 
-type StoreData = {
-  // Legacy podium placements (arrival-ordered unique users). Kept for backward compatibility.
-  placements: Record<string, Record<Game, string[]>>;
-  // Counts of valid posts in the noon window, per date+game
-  counts: Record<string, Record<Game, number>>;
-  // Daily announcement/crown markers
-  daily_announced: Record<string, string>;
-  weekly_crowned: Record<string, string>;
-  // Crown details per ISO week (persisted winners + points)
-  weekly_kings?: Record<string, { winners: string[]; points: number; crowned_at: string }>;
-  // Optional per-week baseline adjustments
-  weekly_adjustments?: Record<string, Record<string, number>>;
-
-  // New: raw messages captured to derive podiums by earliest timestamp (ts), not arrival order.
-  // date -> game -> array of Winner events (may include multiple per user; earliest counts)
-  messages?: Record<string, Record<Game, Winner[]>>;
-};
-
-const initialData = (): StoreData => ({
-  placements: {},
-  counts: {},
-  daily_announced: {},
-  weekly_crowned: {},
-  weekly_kings: {},
-  messages: {},
-});
-
-function isObject(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-function weekKeyForRange(startDate: string, endDate: string): string {
-  // Both dates are within the same ISO week (Mon–Fri). Use startDate's ISO week.
-  const start = DateTime.fromISO(startDate);
-  const wk = start.weekNumber.toString().padStart(2, '0');
-  return `${start.year}-W${wk}`;
-}
-
-function normalizeData(raw: Partial<StoreData & Record<string, unknown>>): StoreData {
-  const base = initialData();
-  const data: StoreData = {
-    placements: isObject(raw.placements) ? (raw.placements as Record<string, Record<Game, string[]>>) : base.placements,
-    counts: isObject(raw.counts) ? (raw.counts as Record<string, Record<Game, number>>) : base.counts,
-    daily_announced: isObject(raw.daily_announced) ? (raw.daily_announced as Record<string, string>) : base.daily_announced,
-    weekly_crowned: isObject(raw.weekly_crowned) ? (raw.weekly_crowned as Record<string, string>) : base.weekly_crowned,
-    weekly_kings: isObject((raw as any).weekly_kings)
-      ? ((raw as any).weekly_kings as Record<string, { winners: string[]; points: number; crowned_at: string }>)
-      : {},
-    weekly_adjustments: isObject(raw.weekly_adjustments)
-      ? (raw.weekly_adjustments as Record<string, Record<string, number>>)
-      : undefined,
-    messages: isObject((raw as any).messages)
-      ? ((raw as any).messages as Record<string, Record<Game, Winner[]>>)
-      : {},
-  };
-
-  // Backward-compat: if legacy 'wins' exists, try to populate placements structure shallowly
-  const wins = (raw as any)?.wins;
-  if (isObject(wins)) {
-    for (const [date, perGame] of Object.entries(wins)) {
-      if (!isObject(perGame)) continue;
-      const p: Record<string, string[]> = (data.placements[date] ||= {} as any);
-      for (const [game, users] of Object.entries(perGame)) {
-        if (Array.isArray(users)) p[game] = users as string[];
-      }
-    }
-  }
-
-  return data;
-}
-
-function parseSlackTs(ts: string): number {
-  // Slack ts like "1757498400.276939"
-  // Use Number/parseFloat for fractional seconds; fallback to 0 on bad values.
-  const n = Number(ts);
-  if (!Number.isNaN(n) && Number.isFinite(n)) return n;
-  const f = parseFloat(ts);
-  return Number.isNaN(f) ? 0 : f;
-}
+type DueSettlement = { date: string; game: Game; channel_id: string };
 
 export class Store {
   private file: string;
@@ -91,324 +47,230 @@ export class Store {
 
   constructor(file = join(process.cwd(), 'data', 'store.json')) {
     this.file = file;
-    const dir = dirname(file);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    if (existsSync(file)) {
-      try {
-        const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<StoreData & Record<string, unknown>>;
-        this.data = normalizeData(raw);
-      } catch {
-        this.data = initialData();
-      }
-    } else {
-      this.data = initialData();
-      this.flush();
-    }
+    this.data = loadStore(file);
+    if (!existsSync(file)) this.flush();
   }
 
-  private flush() {
-    const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
-    renameSync(tmp, this.file);
-  }
+  private flush() { writeStore(this.file, this.data); }
 
-  private ensureDay(date: string) {
-    if (!this.data.placements[date]) this.data.placements[date] = {} as any;
-    if (!this.data.counts[date]) this.data.counts[date] = { boom: 0, hadeda: 0, wednesday: 0 } as any;
-    if (!this.data.messages) this.data.messages = {};
-    if (!this.data.messages[date]) this.data.messages[date] = { boom: [], hadeda: [], wednesday: [] } as any;
-    const perGame = this.data.messages[date] as Record<Game, Winner[]>;
-    if (!perGame.boom) perGame.boom = [];
-    if (!perGame.hadeda) perGame.hadeda = [];
-    if (!perGame.wednesday) perGame.wednesday = [];
-  }
-
-  private getMessages(date: string, game: Game): Winner[] {
-    const mg = this.data.messages?.[date]?.[game];
-    return Array.isArray(mg) ? mg : [];
-  }
-
-  private computePodiumFromMessages(date: string, game: Game): string[] {
-    const msgs = this.getMessages(date, game);
-    if (!msgs.length) return [];
-    // Map user -> earliest ts
-    const earliest = new Map<string, { tsNum: number; tsStr: string }>();
-    for (const m of msgs) {
-      const t = parseSlackTs(m.message_ts);
-      const cur = earliest.get(m.user_id);
-      if (!cur || t < cur.tsNum || (t === cur.tsNum && m.message_ts < cur.tsStr)) {
-        earliest.set(m.user_id, { tsNum: t, tsStr: m.message_ts });
-      }
-    }
-    const ordered = Array.from(earliest.entries())
-      .sort((a, b) => {
-        if (a[1].tsNum !== b[1].tsNum) return a[1].tsNum - b[1].tsNum;
-        // Tie-break deterministically by tsStr then user_id
-        if (a[1].tsStr !== b[1].tsStr) return a[1].tsStr < b[1].tsStr ? -1 : 1;
-        return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
-      })
-      .map(([uid]) => uid);
-    return ordered.slice(0, 3);
-  }
-
-  private computePodium(date: string, game: Game): string[] {
-    // Prefer messages (timestamp-true). Fall back to legacy placements if no messages present.
-    const msgs = this.getMessages(date, game);
-    if (msgs.length) return this.computePodiumFromMessages(date, game);
-
-    // Legacy fallback: use persisted arrival-order unique users
-    const arr = (this.data.placements[date] as any)?.[game] as string[] | undefined;
-    return arr ? arr.slice(0, 3) : [];
+  private appendMessage(date: string, game: Game, user: string, msg: MessageRef) {
+    const entry: Winner = {
+      user_id: user,
+      channel_id: msg.channel_id,
+      message_ts: msg.ts,
+      created_at: DateTime.now().toISO()!,
+    };
+    setNested(this.data.messages ||= {}, date, game, [...messagesFor(this.data, date, game), entry]);
   }
 
   incrementCount(date: string, game: Game): number {
-    this.ensureDay(date);
-    const c = this.data.counts[date][game] || 0;
-    this.data.counts[date][game] = c + 1;
+    ensureDay(this.data, date);
+    this.data.counts[date][game] = (this.data.counts[date][game] || 0) + 1;
     this.flush();
     return this.data.counts[date][game];
   }
 
   getCounts(date: string): Record<Game, number> {
-    this.ensureDay(date);
-    return { ...this.data.counts[date] } as any;
+    ensureDay(this.data, date);
+    return { ...this.data.counts[date] };
   }
 
-  placementsCount(date: string, game: Game): number {
-    this.ensureDay(date);
-    return this.computePodium(date, game).length;
+  scoringFor(date: string): Scoring { return scoringFor(this.data, date); }
+
+  isRandomEra(date: string): boolean { return isRandomEra(this.data, date); }
+
+  private stampScoring(date: string, mode: Scoring) {
+    const byDate = (this.data.scoring ||= {});
+    if (!byDate[date]) byDate[date] = mode;
   }
 
-  /**
-   * Record a valid game message and return the user's podium position (1..3) if this
-   * specific message is their earliest and lands in the top 3 by timestamp.
-   * Returns 0 if not on podium or this message is not the user's earliest.
-   *
-   * Note: ts and channel_id should be Slack-provided strings. If omitted (legacy),
-   * the method will update legacy placements and return position by arrival order.
-   */
-  addPlacement(date: string, game: Game, user: string, ts?: string, channel_id?: string): number {
-    this.ensureDay(date);
+  private stamp(bucket: Record<string, string>, key: string) {
+    bucket[key] = DateTime.now().toISO()!;
+    this.flush();
+  }
 
-    // If ts missing, fall back to legacy behavior (arrival-ordered)
-    if (!ts) {
-      const p = (this.data.placements[date] as any)[game] as string[] | undefined;
-      const arr = p ? [...p] : [];
-      if (arr.includes(user)) return 0; // already placed
-      if (arr.length >= 3) return 0; // podium filled
-      arr.push(user);
-      (this.data.placements[date] as any)[game] = arr;
-      this.flush();
-      return arr.length; // position (1..3)
-    }
+  markDailyAnnounced(date: string) { this.stamp(this.data.daily_announced, date); }
 
-    // Timestamp-based storage and computation
-    const msg: Winner = {
-      user_id: user,
-      channel_id: channel_id || '',
-      message_ts: ts,
-      created_at: DateTime.now().toISO()!,
-    };
+  hasDailyAnnounced(date: string): boolean { return !!this.data.daily_announced[date]; }
 
-    // Deduplicate exact same (user, ts) to avoid duplicates on retries
-    const arr = this.getMessages(date, game);
-    const exists = arr.some((w) => w.user_id === user && w.message_ts === ts);
-    if (!exists) {
-      (this.data.messages as any)[date][game] = [...arr, msg];
-      this.flush();
-    }
+  markCrowned(weekKey: string) { this.stamp(this.data.weekly_crowned, weekKey); }
 
-    // Determine if this message is the user's earliest
-    const all = this.getMessages(date, game);
-    let earliestTsForUser = null as null | string;
-    for (const w of all) {
-      if (w.user_id !== user) continue;
-      if (earliestTsForUser == null) earliestTsForUser = w.message_ts;
-      else {
-        const cur = parseSlackTs(earliestTsForUser);
-        const cand = parseSlackTs(w.message_ts);
-        if (cand < cur || (cand === cur && w.message_ts < earliestTsForUser)) {
-          earliestTsForUser = w.message_ts;
-        }
-      }
-    }
+  hasCrowned(weekKey: string): boolean { return !!this.data.weekly_crowned[weekKey]; }
 
-    const podium = this.computePodium(date, game);
-    const idx = podium.indexOf(user);
+  addPlacement(date: string, game: Game, user: string, msg: MessageRef): number {
+    this.stampScoring(date, 'legacy');
+    ensureDay(this.data, date);
+    this.recordUnlessDuplicate(date, game, user, msg);
+    return this.podiumPositionFor(date, game, user, msg.ts);
+  }
 
-    // Only award a position if:
-    // - the user is currently on podium (idx != -1)
-    // - and this message is the user's earliest for the day/game (to avoid awarding on later duplicates)
-    if (idx !== -1 && earliestTsForUser === ts) {
-      return idx + 1;
-    }
-    return 0;
+  private recordUnlessDuplicate(date: string, game: Game, user: string, msg: MessageRef) {
+    const arr = messagesFor(this.data, date, game);
+    if (arr.some((w) => w.user_id === user && w.message_ts === msg.ts)) return;
+    this.appendMessage(date, game, user, msg);
+    this.flush();
+  }
+
+  private podiumPositionFor(date: string, game: Game, user: string, ts: string): number {
+    const earliest = earliestFor(this.data, date, game).find((m) => m.user_id === user);
+    if (!earliest || earliest.message_ts !== ts) return 0;
+    return podiumFor(this.data, date, game).indexOf(user) + 1;
   }
 
   getPlacements(date: string, game: Game): string[] {
-    this.ensureDay(date);
-    return this.computePodium(date, game);
+    ensureDay(this.data, date);
+    return podiumFor(this.data, date, game);
   }
 
-  /** Top-3 podium messages (earliest per user, sorted by ts) for reaction targeting. */
+  placementsCount(date: string, game: Game): number { return this.getPlacements(date, game).length; }
+
   getPodiumMessages(date: string, game: Game): Winner[] {
-    this.ensureDay(date);
-    const msgs = this.getMessages(date, game);
-    if (!msgs.length) return [];
-    const earliestByUser = new Map<string, Winner>();
-    for (const m of msgs) {
-      const cur = earliestByUser.get(m.user_id);
-      if (!cur) {
-        earliestByUser.set(m.user_id, m);
-        continue;
-      }
-      const curT = parseSlackTs(cur.message_ts);
-      const newT = parseSlackTs(m.message_ts);
-      if (newT < curT || (newT === curT && m.message_ts < cur.message_ts)) {
-        earliestByUser.set(m.user_id, m);
-      }
-    }
-    return Array.from(earliestByUser.values())
-      .sort((a, b) => {
-        const at = parseSlackTs(a.message_ts);
-        const bt = parseSlackTs(b.message_ts);
-        if (at !== bt) return at - bt;
-        if (a.message_ts !== b.message_ts) return a.message_ts < b.message_ts ? -1 : 1;
-        return a.user_id < b.user_id ? -1 : a.user_id > b.user_id ? 1 : 0;
-      })
-      .slice(0, 3);
+    ensureDay(this.data, date);
+    return earliestFor(this.data, date, game).slice(0, 3);
   }
 
-  /** Every date with recorded activity, ascending. Used to find days still awaiting results. */
-  recordedDates(): string[] {
-    const set = new Set<string>([
-      ...Object.keys(this.data.messages || {}),
-      ...Object.keys(this.data.placements || {}),
-    ]);
-    return Array.from(set)
-      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+  recordedDates(): string[] { return datesRecorded(this.data); }
+
+  hasAnyPlacement(date: string): boolean {
+    return GAMES.some((g) => podiumFor(this.data, date, g).length > 0);
+  }
+
+  entrants(date: string, game: Game): Winner[] {
+    ensureDay(this.data, date);
+    return earliestFor(this.data, date, game);
+  }
+
+  entryFor(date: string, game: Game, user: string): Winner | null {
+    return earliestFor(this.data, date, game).find((m) => m.user_id === user) || null;
+  }
+
+  addEntry(date: string, game: Game, user: string, msg: MessageRef): 'recorded' | 'duplicate' | 'redelivery' {
+    this.stampScoring(date, 'random');
+    ensureDay(this.data, date);
+    const prior = this.entryFor(date, game, user);
+    if (prior) return prior.message_ts === msg.ts ? 'redelivery' : 'duplicate';
+
+    this.data.counts[date][game] = (this.data.counts[date][game] || 0) + 1;
+    this.appendMessage(date, game, user, msg);
+    this.flush();
+    return 'recorded';
+  }
+
+  isResolved(date: string, game: Game): boolean { return isResolved(this.data, date, game); }
+
+  getAwards(date: string, game: Game): Award[] { return awardsFor(this.data, date, game); }
+
+  resolveGame(date: string, game: Game, rng: () => number = Math.random, nowMs = Date.now()): Award[] {
+    ensureDay(this.data, date);
+    if (this.isResolved(date, game)) return this.getAwards(date, game);
+    if (!this.isRandomEra(date)) return [];
+
+    const entrants = earliestFor(this.data, date, game);
+    if (!entrants.length && nowMs < windowSettlesAtMs(date)) return [];
+
+    const awarded_at = DateTime.now().toISO()!;
+    const awards: Award[] = assignRandomPoints(entrants, rng).map(({ entrant, points }) => ({
+      user_id: entrant.user_id,
+      points,
+      channel_id: entrant.channel_id,
+      message_ts: entrant.message_ts,
+      awarded_at,
+    }));
+
+    setNested(this.data.awards ||= {}, date, game, awards);
+    this.flush();
+    return awards;
+  }
+
+  duePending(nowMs = Date.now()): DueSettlement[] {
+    return Object.keys(this.data.messages || {})
+      .filter((date) => this.isDueForSettling(date, nowMs))
+      .flatMap((date) => this.unsettledGames(date));
+  }
+
+  private isDueForSettling(date: string, nowMs: number): boolean {
+    if (!this.isRandomEra(date) || this.hasDailyAnnounced(date)) return false;
+    return nowMs >= windowSettlesAtMs(date) && this.hasAnyEntry(date);
+  }
+
+  private unsettledGames(date: string): DueSettlement[] {
+    const needed = neededGamesForDate(date);
+    return GAMES.filter((game) => !this.isResolved(date, game))
+      .map((game) => ({ game, first: earliestFor(this.data, date, game)[0] }))
+      .filter(({ game, first }) => first || needed.includes(game))
+      .map(({ game, first }) => ({
+        date,
+        game,
+        channel_id: first?.channel_id || this.channelForDate(date) || '',
+      }));
+  }
+
+  hasMedalled(date: string, game: Game): boolean {
+    return !!nested<string>(this.data.medalled, date, game);
+  }
+
+  markMedalled(date: string, game: Game) {
+    setNested(this.data.medalled ||= {}, date, game, DateTime.now().toISO()!);
+    this.flush();
+  }
+
+  pendingMedals(nowMs = Date.now()): Array<{ date: string; game: Game }> {
+    const oldest = this.oldestRetryDate(nowMs);
+    return Object.keys(this.data.awards || {})
+      .filter((date) => date >= oldest && this.isRandomEra(date))
+      .flatMap((date) => GAMES.filter((game) => this.needsMedal(date, game)).map((game) => ({ date, game })));
+  }
+
+  private needsMedal(date: string, game: Game): boolean {
+    if (!this.isResolved(date, game) || this.hasMedalled(date, game)) return false;
+    return this.getAwards(date, game).length > 0;
+  }
+
+  private oldestRetryDate(nowMs: number): string {
+    return DateTime.fromMillis(nowMs).setZone(TZ).minus({ days: RETRY_DAYS }).toISODate()!;
+  }
+
+  isWithinRetryWindow(date: string, nowMs = Date.now()): boolean {
+    return date >= this.oldestRetryDate(nowMs);
+  }
+
+  pendingAnnouncements(nowMs = Date.now()): string[] {
+    const oldest = this.oldestRetryDate(nowMs);
+    return Object.keys(this.data.awards || {})
+      .filter((date) => date >= oldest && this.isRandomEra(date) && this.owesAnnouncement(date))
       .sort();
   }
 
-  /** True when at least one game on this date has a settled placement. */
-  hasAnyPlacement(date: string): boolean {
-    return GAMES.some((g) => this.computePodium(date, g).length > 0);
+  private owesAnnouncement(date: string): boolean {
+    const owesResults = !this.hasDailyAnnounced(date);
+    const owesCrown = isFriday(date) && !this.hasCrowned(weekKeyFor(date));
+    if (!owesResults && !owesCrown) return false;
+    return neededGamesForDate(date).every((g) => this.isResolved(date, g));
   }
 
-  /** The channel a date's earliest recorded entry came from, or null if none was stored. */
+  hasAnyEntry(date: string): boolean {
+    return GAMES.some((g) => earliestFor(this.data, date, g).length > 0);
+  }
+
   channelForDate(date: string): string | null {
     for (const g of GAMES) {
-      const msg = this.getPodiumMessages(date, g).find((m) => m.channel_id);
+      const msg = earliestFor(this.data, date, g).find((m) => m.channel_id);
       if (msg) return msg.channel_id;
     }
     return null;
   }
 
-  markDailyAnnounced(date: string) {
-    this.data.daily_announced[date] = DateTime.now().toISO();
-    this.flush();
-  }
-
-  hasDailyAnnounced(date: string): boolean {
-    return !!this.data.daily_announced[date];
-  }
-
-  hasCrowned(weekKey: string): boolean {
-    return !!this.data.weekly_crowned[weekKey];
-  }
-
-  markCrowned(weekKey: string) {
-    this.data.weekly_crowned[weekKey] = DateTime.now().toISO();
-    this.flush();
-  }
-
-  // Persist crowned king(s) for the given ISO week.
-  // winners may include multiple user_ids in case of a tie; points are the shared winning points.
-  // crowned_at is enforced to be strictly monotonic to avoid equality ties within the same millisecond.
   setCrown(weekKey: string, winners: string[], points: number) {
-    if (!this.data.weekly_kings) this.data.weekly_kings = {};
-
-    // Determine max existing crown time (ms)
-    let maxMs = 0;
-    for (const val of Object.values(this.data.weekly_kings)) {
-      if (!val || !val.crowned_at) continue;
-      const m = DateTime.fromISO(val.crowned_at).toMillis();
-      if (Number.isFinite(m) && m > maxMs) maxMs = m;
-    }
-    let tsMs = Date.now();
-    if (tsMs <= maxMs) tsMs = maxMs + 1;
-
-    this.data.weekly_kings[weekKey] = {
-      winners: [...winners],
-      points,
-      crowned_at: DateTime.fromMillis(tsMs).toISO()!,
-    };
+    const kings = (this.data.weekly_kings ||= {});
+    kings[weekKey] = { winners: [...winners], points, crowned_at: DateTime.now().toISO()! };
     this.flush();
   }
 
-  // Returns the most recently crowned week based on crowned_at timestamp.
-  getLatestCrown(): { weekKey: string; winners: string[]; points: number; crowned_at: string } | null {
-    const wk = this.data.weekly_kings;
-    if (!wk || !Object.keys(wk).length) return null;
-    let latest: { weekKey: string; winners: string[]; points: number; crowned_at: string } | null = null;
-    for (const [key, val] of Object.entries(wk)) {
-      if (!val || !val.crowned_at) continue;
-      if (!latest) {
-        latest = { weekKey: key, ...val };
-        continue;
-      }
-      const a = DateTime.fromISO(val.crowned_at);
-      const b = DateTime.fromISO(latest.crowned_at);
-      if (a > b) {
-        latest = { weekKey: key, ...val };
-      }
-    }
-    return latest;
+  latestCompletedWeekWinner(currentDate: string): WeekWinner | null {
+    return latestCompletedWeekWinner(this.data, currentDate);
   }
 
-  // Recompute the current king live from settled weekly totals, avoiding stale Friday snapshots.
-  // Walks back from the ISO week before currentDate, returning the first week with results.
-  latestCompletedWeekWinner(
-    currentDate: string,
-  ): { weekKey: string; start: string; end: string; winners: string[]; points: number } | null {
-    const base = DateTime.fromISO(currentDate, { zone: TZ });
-    for (let back = 1; back <= 8; back++) {
-      const prevDate = base.minus({ weeks: back }).toISODate()!;
-      const { start, end } = weekStartEnd(prevDate);
-      const totals = this.weeklyTotals(start, end);
-      if (!totals.length) continue;
-      const points = totals[0].points;
-      const winners = totals.filter((t) => t.points === points).map((t) => t.user_id);
-      return { weekKey: weekKeyFor(prevDate), start, end, winners, points };
-    }
-    return null;
-  }
-
-  weeklyTotals(startDate: string, endDate: string): Array<{ user_id: string; points: number }> {
-    const res = new Map<string, number>();
-    // Seed baselines if present for the week
-    const weekKey = weekKeyForRange(startDate, endDate);
-    const baselines = this.data.weekly_adjustments?.[weekKey] || {};
-    for (const [user, pts] of Object.entries(baselines)) {
-      res.set(user, pts);
-    }
-    // Iterate all wins in the date range
-    let d = DateTime.fromISO(startDate);
-    const end = DateTime.fromISO(endDate);
-    for (; d <= end; d = d.plus({ days: 1 })) {
-      const date = d.toISODate()!;
-      for (const g of GAMES) {
-        const podium = this.computePodium(date, g);
-        if (!podium.length) continue;
-        const weights = PODIUM_WEIGHTS;
-        podium.forEach((uid, idx) => {
-          const pts = weights[idx] || 0;
-          if (pts > 0) res.set(uid, (res.get(uid) || 0) + pts);
-        });
-      }
-    }
-    return Array.from(res.entries())
-      .map(([user_id, points]) => ({ user_id, points }))
-      .sort((a, b) => (b.points - a.points) || a.user_id.localeCompare(b.user_id));
+  weeklyTotals(startDate: string, endDate: string): Scored[] {
+    return weeklyTotals(this.data, startDate, endDate);
   }
 }
