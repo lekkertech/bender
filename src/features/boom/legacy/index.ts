@@ -245,7 +245,7 @@ export function registerLegacyBoom(app: App, cfg: Config, db: Store) {
       // messages, so the recording must come first.
       // Position reactions (medals) are deferred to announce time so out-of-order WebSocket
       // delivery cannot mis-tag the winners.
-      db.addPlacement(date, game, m.user, tsStr, m.channel);
+      db.addPlacement(date, game, m.user, { ts: tsStr, channel_id: m.channel });
 
       // Clown only a message that holds no place on the settled podium: a 4th-or-later unique
       // user. A podium user's re-post is not clowned; it simply doesn't score again.

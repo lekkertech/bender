@@ -13,14 +13,14 @@ describe('flipping BOOM_SCORING', () => {
     const file = join(dir, 'store.json');
 
     const random = new Store(file);
-    random.addEntry('2026-09-07', 'boom', 'U1', '1757239261.000001', 'C1');
-    random.addEntry('2026-09-07', 'boom', 'U2', '1757239262.000001', 'C1');
+    random.addEntry('2026-09-07', 'boom', 'U1', { ts: '1757239261.000001', channel_id: 'C1' });
+    random.addEntry('2026-09-07', 'boom', 'U2', { ts: '1757239262.000001', channel_id: 'C1' });
     random.resolveGame('2026-09-07', 'boom', () => 0.5, Date.parse('2026-09-07T12:10:00+02:00'));
     const settled = JSON.stringify(random.getAwards('2026-09-07', 'boom'));
 
     const legacy = new Store(file);
-    legacy.addPlacement('2026-09-09', 'boom', 'U1', '1757412061.000001', 'C1');
-    legacy.addPlacement('2026-09-09', 'boom', 'U2', '1757412062.000001', 'C1');
+    legacy.addPlacement('2026-09-09', 'boom', 'U1', { ts: '1757412061.000001', channel_id: 'C1' });
+    legacy.addPlacement('2026-09-09', 'boom', 'U2', { ts: '1757412062.000001', channel_id: 'C1' });
 
     expect(JSON.stringify(legacy.getAwards('2026-09-07', 'boom'))).toBe(settled);
     expect(legacy.scoringFor('2026-09-07')).toBe('random');
@@ -37,10 +37,10 @@ describe('flipping BOOM_SCORING', () => {
   it('never re-scores a random day when only the legacy path runs afterwards', () => {
     const file = join(dir, 'store.json');
     const random = new Store(file);
-    random.addEntry('2026-09-07', 'boom', 'U1', '1757239261.000001', 'C1');
+    random.addEntry('2026-09-07', 'boom', 'U1', { ts: '1757239261.000001', channel_id: 'C1' });
 
     const legacy = new Store(file);
-    legacy.addPlacement('2026-09-07', 'boom', 'U2', '1757239262.000001', 'C1');
+    legacy.addPlacement('2026-09-07', 'boom', 'U2', { ts: '1757239262.000001', channel_id: 'C1' });
     expect(legacy.scoringFor('2026-09-07')).toBe('random');
   });
 });

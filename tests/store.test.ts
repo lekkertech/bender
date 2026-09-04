@@ -128,8 +128,8 @@ describe('Store', () => {
     withStore((db) => {
       const d = '2025-03-03';
       // Simulate out-of-order arrival: later ts first, earlier ts second
-      db.addPlacement(d, 'boom', 'U1', '1757498400.276939', 'C1'); // later
-      db.addPlacement(d, 'boom', 'U2', '1757498400.275209', 'C1'); // earlier
+      db.addPlacement(d, 'boom', 'U1', { ts: '1757498400.276939', channel_id: 'C1' }); // later
+      db.addPlacement(d, 'boom', 'U2', { ts: '1757498400.275209', channel_id: 'C1' }); // earlier
       // Podium should be ordered by ts (earliest first)
       expect(db.getPlacements(d, 'boom')).toEqual(['U2', 'U1']);
 
@@ -150,14 +150,14 @@ describe('Store', () => {
 
       // Mon-Thu: JESSE 1st, Z 2nd in boom each day → JESSE +3*4=12, Z +2*4=8.
       for (const d of ['2025-03-03', '2025-03-04', '2025-03-05', '2025-03-06']) {
-        db.addPlacement(d, 'boom', 'JESSE', next(), 'C1');
-        db.addPlacement(d, 'boom', 'Z', next(), 'C1');
+        db.addPlacement(d, 'boom', 'JESSE', { ts: next(), channel_id: 'C1' });
+        db.addPlacement(d, 'boom', 'Z', { ts: next(), channel_id: 'C1' });
       }
       // Friday: Z sweeps 1st across all three games (+9) while JESSE does not place.
       // Z = 8 + 9 = 17 overtakes JESSE = 12.
-      db.addPlacement('2025-03-07', 'boom', 'Z', next(), 'C1');
-      db.addPlacement('2025-03-07', 'hadeda', 'Z', next(), 'C1');
-      db.addPlacement('2025-03-07', 'wednesday', 'Z', next(), 'C1');
+      db.addPlacement('2025-03-07', 'boom', 'Z', { ts: next(), channel_id: 'C1' });
+      db.addPlacement('2025-03-07', 'hadeda', 'Z', { ts: next(), channel_id: 'C1' });
+      db.addPlacement('2025-03-07', 'wednesday', 'Z', { ts: next(), channel_id: 'C1' });
 
       const totals = db.weeklyTotals('2025-03-03', '2025-03-07');
       const map = new Map(totals.map((r) => [r.user_id, r.points]));
@@ -180,8 +180,8 @@ describe('Store', () => {
       let ts = 1757498400.0;
       const next = () => (ts += 0.001).toFixed(6);
       // A 1st in boom (+3), B 1st in hadeda (+3) → tie at 3.
-      db.addPlacement('2025-03-03', 'boom', 'A', next(), 'C1');
-      db.addPlacement('2025-03-03', 'hadeda', 'B', next(), 'C1');
+      db.addPlacement('2025-03-03', 'boom', 'A', { ts: next(), channel_id: 'C1' });
+      db.addPlacement('2025-03-03', 'hadeda', 'B', { ts: next(), channel_id: 'C1' });
 
       const res = db.latestCompletedWeekWinner('2025-03-12');
       expect(res).not.toBeNull();
@@ -196,7 +196,7 @@ describe('Store', () => {
       // so the immediately-previous week W11 is empty and lookback must reach W10.
       let ts = 1757498400.0;
       const next = () => (ts += 0.001).toFixed(6);
-      db.addPlacement('2025-03-03', 'boom', 'WINNER', next(), 'C1');
+      db.addPlacement('2025-03-03', 'boom', 'WINNER', { ts: next(), channel_id: 'C1' });
 
       const res = db.latestCompletedWeekWinner('2025-03-17');
       expect(res).not.toBeNull();
@@ -211,7 +211,7 @@ describe('Store', () => {
       // all fall before March, so the lookback window never reaches W10.
       let ts = 1757498400.0;
       const next = () => (ts += 0.001).toFixed(6);
-      db.addPlacement('2025-03-03', 'boom', 'WINNER', next(), 'C1');
+      db.addPlacement('2025-03-03', 'boom', 'WINNER', { ts: next(), channel_id: 'C1' });
 
       // Query from 2025-02-24 (W09). Previous weeks W08..W01 (Dec 2024) hold no data.
       expect(db.latestCompletedWeekWinner('2025-02-24')).toBeNull();
@@ -236,7 +236,7 @@ describe('Store random point assignment', () => {
     inRandomEra((db) => {
       const d = DAY;
       const users = ['U1', 'U2', 'U3', 'U4', 'U5'];
-      users.forEach((u, i) => db.addPlacement(d, 'boom', u, tsAt(BASE, i), 'C1'));
+      users.forEach((u, i) => db.addPlacement(d, 'boom', u, { ts: tsAt(BASE, i), channel_id: 'C1' }));
 
       expect(db.isResolved(d, 'boom')).toBe(false);
       expect(db.entrants(d, 'boom').map((e) => e.user_id)).toEqual(users);
@@ -261,7 +261,7 @@ describe('Store random point assignment', () => {
   it('scores one entrant a single point, and settles an unplayed game empty', () =>
     inRandomEra((db) => {
       const d = DAY;
-      db.addPlacement(d, 'boom', 'U1', tsAt(BASE, 0), 'C1');
+      db.addPlacement(d, 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
       expect(db.resolveGame(d, 'boom').map((a) => a.points)).toEqual([1]);
 
       // While the window is still open, a game nobody entered stays unresolved…
@@ -279,7 +279,7 @@ describe('Store random point assignment', () => {
       expect(db.entryFor(d, 'boom', 'UA')).toBeNull();
 
       const ts = tsAt(BASE, 0);
-      db.addPlacement(d, 'boom', 'UA', ts, 'C1');
+      db.addPlacement(d, 'boom', 'UA', { ts: ts, channel_id: 'C1' });
       expect(db.entryFor(d, 'boom', 'UA')).toMatchObject({ user_id: 'UA', message_ts: ts, channel_id: 'C1' });
       // Scoped per game, per user, per day
       expect(db.entryFor(d, 'hadeda', 'UA')).toBeNull();
@@ -293,14 +293,14 @@ describe('Store random point assignment', () => {
       const first = tsAt(BASE, 1);
       const repeat = tsAt(BASE, 2);
 
-      expect(db.addEntry(d, 'boom', 'UA', first, 'C1')).toBe('recorded');
+      expect(db.addEntry(d, 'boom', 'UA', { ts: first, channel_id: 'C1' })).toBe('recorded');
       // A second post from the same user changes nothing at all
-      expect(db.addEntry(d, 'boom', 'UA', repeat, 'C1')).toBe('duplicate');
+      expect(db.addEntry(d, 'boom', 'UA', { ts: repeat, channel_id: 'C1' })).toBe('duplicate');
       // The same message again is a Slack retry, not a repeat post
-      expect(db.addEntry(d, 'boom', 'UA', first, 'C1')).toBe('redelivery');
-      expect(db.addEntry(d, 'boom', 'UB', tsAt(BASE, 3), 'C1')).toBe('recorded');
+      expect(db.addEntry(d, 'boom', 'UA', { ts: first, channel_id: 'C1' })).toBe('redelivery');
+      expect(db.addEntry(d, 'boom', 'UB', { ts: tsAt(BASE, 3), channel_id: 'C1' })).toBe('recorded');
       // Same user, different game: a fresh entry
-      expect(db.addEntry(d, 'hadeda', 'UA', tsAt(BASE, 4), 'C1')).toBe('recorded');
+      expect(db.addEntry(d, 'hadeda', 'UA', { ts: tsAt(BASE, 4), channel_id: 'C1' })).toBe('recorded');
 
       // counts equals the entrant count, and only accepted entries are stored
       expect(db.getCounts(d).boom).toBe(2);
@@ -312,9 +312,9 @@ describe('Store random point assignment', () => {
   it('counts each user once, using their earliest entry message', () =>
     inRandomEra((db) => {
       const d = DAY;
-      db.addPlacement(d, 'boom', 'UA', tsAt(BASE, 0.3), 'C1');
-      db.addPlacement(d, 'boom', 'UA', tsAt(BASE, 0.1), 'C1'); // earlier re-post
-      db.addPlacement(d, 'boom', 'UB', tsAt(BASE, 0.2), 'C1');
+      db.addPlacement(d, 'boom', 'UA', { ts: tsAt(BASE, 0.3), channel_id: 'C1' });
+      db.addPlacement(d, 'boom', 'UA', { ts: tsAt(BASE, 0.1), channel_id: 'C1' }); // earlier re-post
+      db.addPlacement(d, 'boom', 'UB', { ts: tsAt(BASE, 0.2), channel_id: 'C1' });
 
       const awards = db.resolveGame(d, 'boom');
       expect(awards.length).toBe(2);
@@ -330,7 +330,7 @@ describe('Store random point assignment', () => {
       expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 5 * 60 * 1000);
       expect(windowSettlesAtMs(d)).toBe(windowClosesAtMs(d) + 5 * 1000);
 
-      db.addPlacement(d, 'boom', 'U1', tsAt(BASE, 30), 'C1');
+      db.addPlacement(d, 'boom', 'U1', { ts: tsAt(BASE, 30), channel_id: 'C1' });
       expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 5 * 60 * 1000);
 
       // A game nobody entered has exactly the same deadline as one that filled up.
@@ -339,8 +339,8 @@ describe('Store random point assignment', () => {
 
   it('duePending lists every unresolved game once the window has settled', () =>
     inRandomEra((db) => {
-      db.addPlacement(DAY, 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addPlacement(DAY, 'boom', 'U2', tsAt(BASE, 1), 'C1');
+      db.addPlacement(DAY, 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
+      db.addPlacement(DAY, 'boom', 'U2', { ts: tsAt(BASE, 1), channel_id: 'C1' });
 
       // Nothing is due while the window is open, nor during the grace period
       expect(db.duePending(windowClosesAtMs(DAY) - 1)).toEqual([]);
@@ -362,7 +362,7 @@ describe('Store random point assignment', () => {
       db.entrants(DAY, 'boom');
       expect(db.duePending()).toEqual([]);
 
-      db.addPlacement(DAY, 'boom', 'U1', tsAt(BASE, 0), 'C1');
+      db.addPlacement(DAY, 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
       expect(db.duePending().length).toBe(2);
 
       // The previous build announced (and medalled) this day: it is finished
@@ -372,8 +372,8 @@ describe('Store random point assignment', () => {
 
   it('pendingMedals lists settled games whose medals never landed', () =>
     inRandomEra((db) => {
-      db.addPlacement(DAY, 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addPlacement(DAY, 'hadeda', 'U2', tsAt(BASE, 1), 'C1');
+      db.addPlacement(DAY, 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
+      db.addPlacement(DAY, 'hadeda', 'U2', { ts: tsAt(BASE, 1), channel_id: 'C1' });
 
       // Unsettled games owe nothing yet
       expect(db.pendingMedals()).toEqual([]);
@@ -396,7 +396,7 @@ describe('Store random point assignment', () => {
       expect(db.pendingMedals()).toEqual([]);
 
       // Stale failures are not medalled days later
-      db.addPlacement(DAY, 'wednesday', 'U3', tsAt(BASE, 2), 'C1');
+      db.addPlacement(DAY, 'wednesday', 'U3', { ts: tsAt(BASE, 2), channel_id: 'C1' });
       db.resolveGame(DAY, 'wednesday');
       expect(db.pendingMedals()).toEqual([{ date: DAY, game: 'wednesday' }]);
       const daysLater = DateTime.fromISO('2025-03-08T09:00:00', { zone: ZONE }).toMillis();
@@ -407,8 +407,8 @@ describe('Store random point assignment', () => {
     withStoreAt('2025-03-06T09:00:00', '2025-03-07T12:10:00', (db) => {
       const friday = '2025-03-07';
       const fridayBase = BASE + 4 * 24 * 60 * 60; // same 12:00:00 wall clock, four days later
-      db.addPlacement(friday, 'boom', 'U1', tsAt(fridayBase, 0), 'C1');
-      db.addPlacement(friday, 'hadeda', 'U2', tsAt(fridayBase, 1), 'C1');
+      db.addPlacement(friday, 'boom', 'U1', { ts: tsAt(fridayBase, 0), channel_id: 'C1' });
+      db.addPlacement(friday, 'hadeda', 'U2', { ts: tsAt(fridayBase, 1), channel_id: 'C1' });
 
       // Not every game has settled yet
       db.resolveGame(friday, 'boom');
@@ -433,8 +433,8 @@ describe('Store random point assignment', () => {
 
   it('scores a day recorded through the random entry path', () =>
     withStoreAt('2025-03-03T09:00:00', '2025-03-03T12:30:00', (db) => {
-      db.addEntry('2025-03-03', 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addEntry('2025-03-03', 'boom', 'U2', tsAt(BASE, 1), 'C1');
+      db.addEntry('2025-03-03', 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
+      db.addEntry('2025-03-03', 'boom', 'U2', { ts: tsAt(BASE, 1), channel_id: 'C1' });
       expect(db.isRandomEra('2025-03-03')).toBe(true);
 
       expect(db.resolveGame('2025-03-03', 'boom').map((a) => a.points).sort()).toEqual([1, 2]);
@@ -466,9 +466,9 @@ describe('Store random point assignment', () => {
   it('keeps legacy 3-2-1 scoring for a date recorded through the podium path', () =>
     withStore((db) => {
       const legacy = '2025-03-03';
-      db.addPlacement(legacy, 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addPlacement(legacy, 'boom', 'U2', tsAt(BASE, 1), 'C1');
-      db.addPlacement(legacy, 'boom', 'U3', tsAt(BASE, 2), 'C1');
+      db.addPlacement(legacy, 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
+      db.addPlacement(legacy, 'boom', 'U2', { ts: tsAt(BASE, 1), channel_id: 'C1' });
+      db.addPlacement(legacy, 'boom', 'U3', { ts: tsAt(BASE, 2), channel_id: 'C1' });
       const legacyTotals = new Map(db.weeklyTotals(legacy, legacy).map((r) => [r.user_id, r.points]));
       expect(legacyTotals.get('U1')).toBe(3);
       expect(legacyTotals.get('U2')).toBe(2);
@@ -481,7 +481,7 @@ describe('Store random point assignment', () => {
 
   it('scores nothing for a random-era game until its window settles', () =>
     inRandomEra((db) => {
-      db.addPlacement(DAY, 'boom', 'U9', tsAt(BASE, 0), 'C1');
+      db.addPlacement(DAY, 'boom', 'U9', { ts: tsAt(BASE, 0), channel_id: 'C1' });
 
       // Recorded, but provisional points must never leak into the leaderboard
       expect(db.weeklyTotals(DAY, DAY)).toEqual([]);
@@ -496,16 +496,16 @@ describe('scoring mode stamp', () => {
 
   it('stamps a random entry random and a legacy placement legacy', () =>
     withStore((db) => {
-      db.addEntry('2026-09-07', 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addPlacement('2026-09-08', 'boom', 'U1', tsAt(BASE, 1), 'C1');
+      db.addEntry('2026-09-07', 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
+      db.addPlacement('2026-09-08', 'boom', 'U1', { ts: tsAt(BASE, 1), channel_id: 'C1' });
       expect(db.scoringFor('2026-09-07')).toBe('random');
       expect(db.scoringFor('2026-09-08')).toBe('legacy');
     }));
 
   it('never re-stamps a date that is already stamped', () =>
     withStore((db) => {
-      db.addEntry('2026-09-07', 'boom', 'U1', tsAt(BASE, 0), 'C1');
-      db.addPlacement('2026-09-07', 'boom', 'U2', tsAt(BASE, 1), 'C1');
+      db.addEntry('2026-09-07', 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
+      db.addPlacement('2026-09-07', 'boom', 'U2', { ts: tsAt(BASE, 1), channel_id: 'C1' });
       expect(db.scoringFor('2026-09-07')).toBe('random');
     }));
 

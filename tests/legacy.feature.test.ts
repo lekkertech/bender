@@ -460,7 +460,7 @@ describe('Boom feature integration-like behavior', () => {
     // One user posts boom three times (distinct ts).
     for (const micros of [100000, 200000, 300000]) {
       db.incrementCount(date, 'boom');
-      db.addPlacement(date, 'boom', 'UA', toTsMicros(`${date}T12:00:00`, micros), 'C1');
+      db.addPlacement(date, 'boom', 'UA', { ts: toTsMicros(`${date}T12:00:00`, micros), channel_id: 'C1' });
     }
 
     // counts reaches 3 while only 1 unique finisher has settled.
@@ -469,11 +469,11 @@ describe('Boom feature integration-like behavior', () => {
 
     // placementsCount only reaches 3 once 3 DISTINCT users have posted.
     db.incrementCount(date, 'boom');
-    db.addPlacement(date, 'boom', 'UB', toTsMicros(`${date}T12:00:00`, 400000), 'C1');
+    db.addPlacement(date, 'boom', 'UB', { ts: toTsMicros(`${date}T12:00:00`, 400000), channel_id: 'C1' });
     expect(db.placementsCount(date, 'boom')).toBe(2);
 
     db.incrementCount(date, 'boom');
-    db.addPlacement(date, 'boom', 'UZ', toTsMicros(`${date}T12:00:00`, 500000), 'C1');
+    db.addPlacement(date, 'boom', 'UZ', { ts: toTsMicros(`${date}T12:00:00`, 500000), channel_id: 'C1' });
     expect(db.placementsCount(date, 'boom')).toBe(3);
   });
 
