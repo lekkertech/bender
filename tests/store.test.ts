@@ -214,7 +214,7 @@ describe('Store random point assignment', () => {
   const BASE = 1740996000;
   const DAY = '2025-03-03';
   const BOOT = '2025-03-02T09:00:00';
-  const NOW = '2025-03-03T12:10:00';
+  const NOW = '2025-03-03T12:15:00';
   const tsAt = (base: number, offset: number) => (base + offset).toFixed(6);
   // The dates this suite plays are recorded through addPlacement, the legacy write path, so the
   // random-era stamp is seeded rather than written. A real random-era day is stamped by addEntry.
@@ -312,16 +312,16 @@ describe('Store random point assignment', () => {
       expect(awards.find((a) => a.user_id === 'UA')!.message_ts).toBe(tsAt(BASE, 0.1));
     }));
 
-  it('holds the window fixed at 12:00-12:05 whatever the entries look like', () =>
+  it('holds the window fixed at 12:00-12:10 whatever the entries look like', () =>
     inRandomEra((db) => {
       const d = DAY;
       // The window does not move to meet the first entry, and does not stretch for a late one.
       expect(windowOpensAtMs(d)).toBe(BASE * 1000);
-      expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 5 * 60 * 1000);
+      expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 10 * 60 * 1000);
       expect(windowSettlesAtMs(d)).toBe(windowClosesAtMs(d) + 5 * 1000);
 
       db.addPlacement(d, 'boom', 'U1', { ts: tsAt(BASE, 30), channel_id: 'C1' });
-      expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 5 * 60 * 1000);
+      expect(windowClosesAtMs(d)).toBe(BASE * 1000 + 10 * 60 * 1000);
 
       // A game nobody entered has exactly the same deadline as one that filled up.
       expect(windowSettlesAtMs(d)).toBe(windowClosesAtMs(d) + 5 * 1000);

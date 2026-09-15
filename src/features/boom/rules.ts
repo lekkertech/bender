@@ -16,12 +16,12 @@ export const PODIUM_WEIGHTS = [3, 2, 1] as const;
 
 /**
  * How long the entry window stays open, measured from 12:00:00 local. The window is the same for
- * every game and does not move: it opens at noon whether or not anyone posts, and closes 5 minutes
+ * every game and does not move: it opens at noon whether or not anyone posts, and closes 10 minutes
  * later. When it closes, every unique entrant is given a unique random point value in 1..n.
  */
 export const ENTRY_WINDOW_MS = (() => {
   const raw = Number(process.env.BOOM_ENTRY_WINDOW_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000;
+  return Number.isFinite(raw) && raw > 0 ? raw : 10 * 60 * 1000;
 })();
 
 /**
@@ -110,7 +110,7 @@ export function windowOpensAtMs(date: string): number {
 }
 
 /**
- * ms epoch at which the entry window shuts, exclusive: 12:05:00.000 local by default. A message
+ * ms epoch at which the entry window shuts, exclusive: 12:10:00.000 local by default. A message
  * whose `ts` is at or after this instant is late, however early it was delivered.
  */
 export function windowClosesAtMs(date: string): number {

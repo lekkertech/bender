@@ -46,12 +46,12 @@ describe('rules.ts basics', () => {
     expect(detectAnyGameEmoji('something else')).toBeNull();
   });
 
-  it('inEntryWindow accepts only 12:00:00 to 12:04:59 local', () => {
-    // The window is fixed: it opens at noon whether or not anyone posts, and shuts 5 minutes on.
+  it('inEntryWindow accepts only 12:00:00 to 12:09:59 local', () => {
+    // The window is fixed: it opens at noon whether or not anyone posts, and shuts 10 minutes on.
     expect(inEntryWindow(toSec('2025-03-03T11:59:59'))).toBe(false);
     expect(inEntryWindow(toSec('2025-03-03T12:00:00'))).toBe(true);
-    expect(inEntryWindow(toSec('2025-03-03T12:04:59'))).toBe(true);
-    expect(inEntryWindow(toSec('2025-03-03T12:05:00'))).toBe(false);
+    expect(inEntryWindow(toSec('2025-03-03T12:09:59'))).toBe(true);
+    expect(inEntryWindow(toSec('2025-03-03T12:10:00'))).toBe(false);
     // Being merely inside the noon hour is no longer enough.
     expect(inEntryWindow(toSec('2025-03-03T12:30:00'))).toBe(false);
     expect(inEntryWindow(toSec('2025-03-03T12:59:59'))).toBe(false);
@@ -97,16 +97,16 @@ describe('rules.ts basics', () => {
     expect(neededGamesForDate('2025-03-07')).toEqual(['boom', 'hadeda']); // Fri
   });
 
-  it('the entry window is 5 minutes, settling 5 seconds later', () => {
-    expect(ENTRY_WINDOW_MS).toBe(5 * 60 * 1000);
+  it('the entry window is 10 minutes, settling 5 seconds later', () => {
+    expect(ENTRY_WINDOW_MS).toBe(10 * 60 * 1000);
     expect(ENTRY_GRACE_MS).toBe(5 * 1000);
   });
 
-  it('the window runs 12:00:00 to 12:05:00 local and settles at 12:05:05', () => {
+  it('the window runs 12:00:00 to 12:10:00 local and settles at 12:10:05', () => {
     const iso = (ms: number) => DateTime.fromMillis(ms, { zone: ZONE }).toISO();
     expect(iso(windowOpensAtMs('2025-03-03'))).toBe('2025-03-03T12:00:00.000+02:00');
-    expect(iso(windowClosesAtMs('2025-03-03'))).toBe('2025-03-03T12:05:00.000+02:00');
-    expect(iso(windowSettlesAtMs('2025-03-03'))).toBe('2025-03-03T12:05:05.000+02:00');
+    expect(iso(windowClosesAtMs('2025-03-03'))).toBe('2025-03-03T12:10:00.000+02:00');
+    expect(iso(windowSettlesAtMs('2025-03-03'))).toBe('2025-03-03T12:10:05.000+02:00');
 
     // The close is exclusive: the last instant that still counts is one ms before it.
     const close = windowClosesAtMs('2025-03-03');

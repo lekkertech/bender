@@ -4,13 +4,13 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
 
 ## Features
 - Boom Game module (isolated):
-  - Detect single-emoji messages in `#capetown` between 12:00:00–12:05:00
-  - One fixed 5-minute window per day, 12:00:00–12:05:00 local, shared by every emoji: it opens at noon whether or not anyone posts, and every unique entrant inside it is counted. A message counts on its own timestamp alone — not on when Slack delivered it, and not on who posted first
+  - Detect single-emoji messages in `#capetown` between 12:00:00–12:10:00
+  - One fixed 10-minute window per day, 12:00:00–12:10:00 local, shared by every emoji: it opens at noon whether or not anyone posts, and every unique entrant inside it is counted. A message counts on its own timestamp alone — not on when Slack delivered it, and not on who posted first
   - One entry per player per emoji: accepted entries get a :white_check_mark: reaction to confirm they are in the tally
   - When the window closes, the `n` entrants each draw a unique random amount between 1 and `n` (3 people sending :boom: split 3/2/1 in random order; 9 people sending :hadeda-boom: split 9…1)
   - Post the daily results + week-to-date leaderboard once every game for the day has settled; medals go to the three biggest point earners
   - Crown weekly winner(s) once Friday’s games have settled; leaderboard resets weekly (Mon)
-  - The bot adds a :clown_face: reaction (and ignores the message entirely) if a boom emoji is posted outside the 12:00–12:05 window, after the day’s points are assigned, or as a repeat by a player who already entered that game
+  - The bot adds a :clown_face: reaction (and ignores the message entirely) if a boom emoji is posted outside the 12:00–12:10 window, after the day’s points are assigned, or as a repeat by a player who already entered that game
   - A required game nobody entered settles empty when the window shuts, rendering as `— no entries`, so the day's results (and a Friday crown) never stall on a game nobody played
   - The crown is recorded only after its message posts, so a failed post is retried rather than leaving a king nobody was told about
   - On a weekend or public holiday the "Boom isn't played today" notice is posted once per date, not once per poster
@@ -70,7 +70,7 @@ See `docs/CONFIG.md` for more details.
   - `ALLOWED_CHANNELS=C0919MX7KJS` (your `#capetown` channel ID)
   - Optionally `HOLIDAYS=YYYY-MM-DD,YYYY-MM-DD` to add extra dates
   - Optionally `BOOM_SCORING=random` (`legacy` restores the 3-2-1 podium; takes effect at the next restart)
-  - Random mode only: `BOOM_ENTRY_WINDOW_MS=300000` (how long the window stays open from 12:00:00 local; points are assigned 5s after it shuts)
+  - Random mode only: `BOOM_ENTRY_WINDOW_MS=600000` (how long the window stays open from 12:00:00 local; points are assigned 5s after it shuts)
   - Legacy mode only: `BOOM_ANNOUNCE_GRACE_MS=15000` (delay between a full podium and the announcement)
   - Chat fallback is configurable via `CHAT_*` variables. See docs/CONFIG.md.
 

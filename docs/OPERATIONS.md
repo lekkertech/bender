@@ -27,20 +27,20 @@ Day-2 operations for your Slack bot: monitoring, rotation, and recovery.
 - Roll forward strategy preferred; maintain ability to roll back a previous image.
 
 
-## Boom Game Scoring: The 12:00-12:05 Entry Window
+## Boom Game Scoring: The 12:00-12:10 Entry Window
 
 Scoring is no longer order-based. Each game (`boom`, `hadeda`, `wednesday`) tallies everyone who
 posts its emoji inside one fixed window, then hands out points at random.
 
 - Entry window:
   - The window opens at **12:00:00.000 local** and shuts `BOOM_ENTRY_WINDOW_MS` later (default
-    5 minutes, so 12:05:00.000, exclusive). It is the same window for every game and for every
+    10 minutes, so 12:10:00.000, exclusive). It is the same window for every game and for every
     workday, and it does not move: it opens at noon whether or not anyone posts.
-  - Nothing about the window depends on the entries. A first post at 12:04:00 gets 60 seconds of
-    tallying, not a fresh 5 minutes; a post at 11:59:59 is early and a post at 12:05:00 is late.
+  - Nothing about the window depends on the entries. A first post at 12:09:00 gets 60 seconds of
+    tallying, not a fresh 10 minutes; a post at 11:59:59 is early and a post at 12:10:00 is late.
   - Eligibility is decided by the message's own Slack `ts` alone — not by when the event was
     delivered, and not by whether anyone else posted first.
-  - Points are assigned `ENTRY_GRACE_MS` (5s) *after* the close, at 12:05:05. This exists only so
+  - Points are assigned `ENTRY_GRACE_MS` (5s) *after* the close, at 12:10:05. This exists only so
     a message sent inside the window but delivered a moment late still makes the tally; because
     eligibility is judged on `ts`, the grace never buys anyone extra time to post.
   - One entry per user per game: the first valid post is recorded and gets a
@@ -48,7 +48,7 @@ posts its emoji inside one fixed window, then hands out points at random.
   - A repeat post by a user who already entered that game is ignored completely — no entrant, no
     `counts` increment, no stored message — and gets `:clown_face:`. `counts[date][game]`
     therefore equals the number of entrants.
-  - Any game emoji outside the window — before 12:00, after 12:05, or later in the noon hour —
+  - Any game emoji outside the window — before 12:00, after 12:10, or later in the noon hour —
     gets `:clown_face:` and scores nothing.
 - Point assignment:
   - When the window shuts, the `n` entrants of each game are given a random permutation of `1..n`:
@@ -64,12 +64,12 @@ posts its emoji inside one fixed window, then hands out points at random.
   - Daily results post once every game required that day has settled (Wednesdays require
     `wednesday` too). The Friday crown follows the Friday results.
   - Every game of a date settles at the same instant, so a required game nobody entered settles
-    empty at 12:05:05 and renders as `— no entries`. Without that the day's results — and, on a
+    empty at 12:10:05 and renders as `— no entries`. Without that the day's results — and, on a
     Friday, the week's crown — would stall forever on a game nobody played. Only a date somebody
     actually played settles at all, so a quiet workday produces no post.
   - Each post is marked done (`daily_announced`, `weekly_crowned`, and `weekly_kings` for the
     crown's winners) only after Slack accepts it. A failed post leaves the work outstanding and
-    `pendingAnnouncements()` re-offers it to the next catch-up, so a transient rate-limit at 12:05
+    `pendingAnnouncements()` re-offers it to the next catch-up, so a transient rate-limit at 12:10
     delays the results instead of dropping them. The results post and the crown retry
     independently — a lost crown never re-posts the results, and leaves no record of a crown nobody
     saw.
@@ -98,8 +98,8 @@ posts its emoji inside one fixed window, then hands out points at random.
   - Points look wrong: check `awards[date][game]` in `data/store.json`; it is the single source of
     truth for scoring, and `awarded_at` shows when the window closed.
   - Results never posted: confirm every required game for that date has an `awards` entry. A game
-    nobody entered gets an empty `awards` array at 12:05:05; if one is missing entirely, the day
-    had no entrants at all (nothing to announce) or the process was down across 12:05 and has seen
+    nobody entered gets an empty `awards` array at 12:10:05; if one is missing entirely, the day
+    had no entrants at all (nothing to announce) or the process was down across 12:10 and has seen
     no message since.
   - Results settled but not posted: the Slack call failed. Check the logs; the next message in the
     channel or the 30s sweep retries it. `daily_announced[date]` missing while `awards[date]` is
@@ -107,7 +107,7 @@ posts its emoji inside one fixed window, then hands out points at random.
 
 ## Boom Game Ordering and Data Notes
 
-Effective 2025-09-10, the Boom game podium is computed by earliest Slack message timestamp (`event.ts`), not by order of receipt over WebSocket. This prevents out-of-order delivery from affecting results. Since the move to random point assignment (see above), timestamps no longer decide who wins — the window is fixed at 12:00-12:05 local. They decide only whether a message falls inside it, and which of a user's messages counts as their entry.
+Effective 2025-09-10, the Boom game podium is computed by earliest Slack message timestamp (`event.ts`), not by order of receipt over WebSocket. This prevents out-of-order delivery from affecting results. Since the move to random point assignment (see above), timestamps no longer decide who wins — the window is fixed at 12:00-12:10 local. They decide only whether a message falls inside it, and which of a user's messages counts as their entry.
 
 Effective 2026-08-31, a valid in-window message is recorded before any clown judgment is made. This guards a race proven in production on 2026-08-31 and reproduced in `tests/boom.race.test.ts`: Slack delivered the true 3rd-by-ts hadeda entry after a later one had already filled the old three-place podium, so the message was clowned without ever being recorded. Under random scoring there is no place left to lose — every unique entrant inside the entry window is recorded and scores whatever order the events arrive in — and the `ENTRY_GRACE_MS` deferral covers the same delay for a message sent just inside the window.
 
@@ -154,9 +154,9 @@ Operational notes:
 ## Boom Game Day Settlement
 
 Effective 2026-08-28, a Boom day no longer needs every game to reach three entrants before it is
-announced. Under random scoring (see above) every game settles on the one fixed 12:00-12:05 window,
+announced. Under random scoring (see above) every game settles on the one fixed 12:00-12:10 window,
 so the number of entrants never blocks a day: a required game nobody entered simply settles empty
-at 12:05:05 alongside the games that were played.
+at 12:10:05 alongside the games that were played.
 
 Key points:
 - Trigger: `catchUp` runs at the top of the message handler, on `@bot leaderboard`, and on a 30s

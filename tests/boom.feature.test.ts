@@ -434,21 +434,21 @@ describe('Boom feature integration-like behavior', () => {
     const firstTs = toTs('2025-03-03T12:00:00');
     await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: firstTs });
 
-    // Sent 12:04:59 (inside the window, which shuts at 12:05:00), delivered 12:05:03 — settling is
-    // deferred to 12:05:05, so the entry still counts instead of being clowned as too late.
-    const graceTs = toTs('2025-03-03T12:04:59');
+    // Sent 12:09:59 (inside the window, which shuts at 12:10:00), delivered 12:10:03 — settling is
+    // deferred to 12:10:05, so the entry still counts instead of being clowned as too late.
+    const graceTs = toTs('2025-03-03T12:09:59');
     await t.triggerMessage({
       text: ':boom:',
       user: 'U2',
       channel: 'C1',
       ts: graceTs,
-      at: toTs('2025-03-03T12:05:03'),
+      at: toTs('2025-03-03T12:10:03'),
     });
     expect(acked(t)).toEqual([firstTs, graceTs]);
     expect(clowned(t)).toEqual([]);
 
     // Delivered after settling, points are already assigned: unavoidably too late
-    const tooLateTs = toTs('2025-03-03T12:04:58');
+    const tooLateTs = toTs('2025-03-03T12:09:58');
     await t.triggerMessage({
       text: ':boom:',
       user: 'U3',
@@ -463,7 +463,7 @@ describe('Boom feature integration-like behavior', () => {
     expect(boom.map((a: any) => a.points).sort()).toEqual([1, 2]);
   });
 
-  it('runs 12:00:00 to 12:05:00 whatever time the first entry lands', async () => {
+  it('runs 12:00:00 to 12:10:00 whatever time the first entry lands', async () => {
     const t = bootAt('2025-03-03T11:59:00');
 
     // Too early: the window has not opened yet.
@@ -471,15 +471,15 @@ describe('Boom feature integration-like behavior', () => {
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U0', channel: 'C1', ts: earlyTs });
 
     // The window does not start when the first person posts — it opened at noon regardless, so a
-    // first entry at 12:04:00 gets 60 seconds, not a fresh 5 minutes.
-    const firstTs = toTs('2025-03-03T12:04:00');
+    // first entry at 12:09:00 gets 60 seconds, not a fresh 10 minutes.
+    const firstTs = toTs('2025-03-03T12:09:00');
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: firstTs });
-    const lastTs = toTs('2025-03-03T12:04:59');
+    const lastTs = toTs('2025-03-03T12:09:59');
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: lastTs });
     expect(acked(t)).toEqual([firstTs, lastTs]);
 
-    // 12:05:01 is late even though only a minute of tallying happened.
-    const lateTs = toTs('2025-03-03T12:05:01');
+    // 12:10:01 is late even though only a minute of tallying happened.
+    const lateTs = toTs('2025-03-03T12:10:01');
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U3', channel: 'C1', ts: lateTs });
     expect(clowned(t)).toEqual([earlyTs, lateTs]);
 
@@ -608,7 +608,7 @@ describe('Boom feature integration-like behavior', () => {
     await closeWindows();
     expect(readStore().awards['2025-03-03'].boom.length).toBe(2);
 
-    // Same day, still inside the noon hour, but the window shut at 12:05
+    // Same day, still inside the noon hour, but the window shut at 12:10
     await t.triggerMessage({ text: ':boom:', user: 'U3', channel: 'C1', ts: toTs('2025-03-03T12:10:00') });
     expect(clowned(t)).toEqual([toTs('2025-03-03T12:10:00')]);
     expect(reactions(t, 'clown_face')[0]).toMatchObject({ channel: 'C1' });
