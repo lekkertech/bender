@@ -7,10 +7,12 @@ import {
   GAMES,
   isFriday,
   neededGamesForDate,
+  timingMedals,
   windowSettlesAtMs,
   TZ,
   weekKeyFor,
   type Game,
+  type MedalKind,
 } from './rules.js';
 import {
   awardsFor,
@@ -40,6 +42,12 @@ import {
 export type { Award } from './store-data.js';
 
 type DueSettlement = { date: string; game: Game; channel_id: string };
+
+function toAward(entrant: Winner, points: number, awarded_at: string, medal?: MedalKind): Award {
+  const { user_id, channel_id, message_ts } = entrant;
+  const award: Award = { user_id, points, channel_id, message_ts, awarded_at };
+  return medal ? { ...award, medal } : award;
+}
 
 export class Store {
   private file: string;
@@ -168,14 +176,14 @@ export class Store {
     const entrants = earliestFor(this.data, date, game);
     if (!entrants.length && nowMs < windowSettlesAtMs(date)) return [];
 
+    // Timing medallists (first, last, middle to post) are listed twice, so they draw twice and keep
+    // their better draw; the distinct entrants are then scored n..1 as ever.
+    const medals = timingMedals(entrants, rng);
     const awarded_at = DateTime.now().toISO()!;
-    const awards: Award[] = assignRandomPoints(entrants, rng).map(({ entrant, points }) => ({
-      user_id: entrant.user_id,
-      points,
-      channel_id: entrant.channel_id,
-      message_ts: entrant.message_ts,
-      awarded_at,
-    }));
+    const bonus = entrants.filter((e) => medals.has(e));
+    const awards = assignRandomPoints([...entrants, ...bonus], rng).map(({ entrant, points }) =>
+      toAward(entrant, points, awarded_at, medals.get(entrant)),
+    );
 
     setNested(this.data.awards ||= {}, date, game, awards);
     this.flush();

@@ -62,25 +62,69 @@ export function neededGamesForDate(date: string): Game[] {
 }
 
 /**
- * Give each of the n entrants a unique random point value in 1..n: one entrant gets n,
+ * Give each of the n distinct entrants a unique random point value in 1..n: one entrant gets n,
  * another n-1, down to 1 for the last. Returns entries sorted by points descending.
+ *
+ * An entrant listed more than once (a timing medallist's bonus entry) draws once per listing and
+ * keeps its best draw; the distinct entrants are then ranked by that draw and scored n..1, so the
+ * bonus lifts the odds of a high rank without raising the ceiling above the entrant count.
  */
 export function assignRandomPoints<T>(
-  entrants: readonly T[],
+  entries: readonly T[],
   rng: () => number = Math.random,
 ): Array<{ entrant: T; points: number }> {
-  const n = entrants.length;
-  const points = Array.from({ length: n }, (_, i) => i + 1);
-  // Fisher-Yates over the point values, so each entrant draws a distinct amount.
+  const n = entries.length;
+  const draws = Array.from({ length: n }, (_, i) => i + 1);
+  // Fisher-Yates over the draw values, so each entry draws a distinct amount.
   for (let i = n - 1; i > 0; i--) {
     const j = Math.min(i, Math.max(0, Math.floor(rng() * (i + 1))));
-    const tmp = points[i]!;
-    points[i] = points[j]!;
-    points[j] = tmp;
+    const tmp = draws[i]!;
+    draws[i] = draws[j]!;
+    draws[j] = tmp;
   }
-  return entrants
-    .map((entrant, i) => ({ entrant, points: points[i]! }))
-    .sort((a, b) => b.points - a.points);
+  const best = new Map<T, number>();
+  entries.forEach((entrant, i) => {
+    if ((best.get(entrant) ?? 0) < draws[i]!) best.set(entrant, draws[i]!);
+  });
+  return Array.from(best.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([entrant], rank, ranked) => ({ entrant, points: ranked.length - rank }));
+}
+
+export type MedalKind = 'first' | 'last' | 'middle';
+
+/**
+ * Timing medals for a game's entrants, given in message-ts order: the first and last to post, and
+ * the entrant nearest the halfway point between them. First and last are never the middle, so one
+ * entrant holds one medal, two hold first and last, and three or more hold all three. An entrant
+ * exactly as far before the halfway point as another is after it loses or wins the middle on `rng`.
+ */
+export function timingMedals<T extends { message_ts: string }>(
+  sorted: readonly T[],
+  rng: () => number = Math.random,
+): Map<T, MedalKind> {
+  const medals = new Map<T, MedalKind>();
+  if (!sorted.length) return medals;
+  const first = sorted[0]!;
+  const last = sorted[sorted.length - 1]!;
+  medals.set(first, 'first');
+  if (last !== first) medals.set(last, 'last');
+  const middle = middleOf(sorted, rng);
+  if (middle) medals.set(middle, 'middle');
+  return medals;
+}
+
+function middleOf<T extends { message_ts: string }>(sorted: readonly T[], rng: () => number): T | null {
+  const interior = sorted.slice(1, -1);
+  if (!interior.length) return null;
+  const ts = (e: T) => Number(e.message_ts);
+  const halfway = (ts(sorted[0]!) + ts(sorted[sorted.length - 1]!)) / 2;
+  const before = interior.filter((e) => ts(e) <= halfway).pop();
+  const after = interior.find((e) => ts(e) > halfway);
+  if (!before || !after) return before || after || null;
+  const lead = (ts(after) - halfway) - (halfway - ts(before));
+  if (lead !== 0) return lead > 0 ? before : after;
+  return rng() < 0.5 ? before : after;
 }
 
 /** Boom is only played Mon-Fri, excluding public holidays. */

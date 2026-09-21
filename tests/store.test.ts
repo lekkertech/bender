@@ -248,11 +248,32 @@ describe('Store random point assignment', () => {
       for (const a of awards) expect(totals.get(a.user_id)).toBe(a.points);
     }));
 
+  it('labels the first, last and middle to post, and keeps the labels on the stored awards', () =>
+    inRandomEra((db) => {
+      const d = DAY;
+      // Halfway between U1 (0s) and U4 (540s) is 270s: U3 at 240s is nearer than U2 at 60s.
+      const offsets: Record<string, number> = { U1: 0, U2: 60, U3: 240, U4: 540 };
+      for (const [u, offset] of Object.entries(offsets)) {
+        db.addPlacement(d, 'boom', u, { ts: tsAt(BASE, offset), channel_id: 'C1' });
+      }
+
+      const awards = db.resolveGame(d, 'boom');
+      const medals = Object.fromEntries(awards.map((a) => [a.user_id, a.medal]));
+      expect(medals).toEqual({ U1: 'first', U3: 'middle', U4: 'last', U2: undefined });
+      // Still one award per entrant and exactly 4..1: a medal lifts the odds, not the ceiling
+      expect(awards.map((a) => a.points)).toEqual([4, 3, 2, 1]);
+      expect(awards.filter((a) => 'medal' in a)).toHaveLength(3);
+
+      const reloaded = new Store((db as any).file);
+      expect(reloaded.getAwards(d, 'boom')).toEqual(awards);
+    }));
+
   it('scores one entrant a single point, and settles an unplayed game empty', () =>
     inRandomEra((db) => {
       const d = DAY;
       db.addPlacement(d, 'boom', 'U1', { ts: tsAt(BASE, 0), channel_id: 'C1' });
-      expect(db.resolveGame(d, 'boom').map((a) => a.points)).toEqual([1]);
+      // A solo entrant holds one medal and so draws twice, but is still the only one to score
+      expect(db.resolveGame(d, 'boom').map((a) => [a.points, a.medal])).toEqual([[1, 'first']]);
 
       // While the window is still open, a game nobody entered stays unresolved…
       expect(db.resolveGame(d, 'hadeda', Math.random, windowClosesAtMs(d) - 1)).toEqual([]);

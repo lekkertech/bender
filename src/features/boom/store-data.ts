@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Scoring } from '../../env.js';
-import { GAMES, PODIUM_WEIGHTS, TZ, weekKeyFor, weekStartEnd, type Game } from './rules.js';
+import { GAMES, PODIUM_WEIGHTS, TZ, weekKeyFor, weekStartEnd, type Game, type MedalKind } from './rules.js';
 import { DateTime } from 'luxon';
 
 export type Winner = { user_id: string; channel_id: string; message_ts: string; created_at: string };
@@ -14,6 +14,8 @@ export type Award = {
   channel_id: string;
   message_ts: string;
   awarded_at: string;
+  /** Set when the entrant held a timing medal (first, last or middle to post) and drew a bonus entry. */
+  medal?: MedalKind;
 };
 
 export type WeeklyKing = { winners: string[]; points: number; crowned_at: string };

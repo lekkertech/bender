@@ -9,6 +9,7 @@ import {
   inEntryWindow,
   localDayInfo,
   neededGamesForDate,
+  timingMedals,
   windowClosesAtMs,
   windowOpensAtMs,
   windowSettlesAtMs,
@@ -159,5 +160,66 @@ describe('assignRandomPoints', () => {
 
   it('returns nothing for no entrants', () => {
     expect(assignRandomPoints([])).toEqual([]);
+  });
+
+  it('scores an entrant listed twice once, on its better draw, and still hands out exactly 1..n', () => {
+    // rng() === 1 leaves the draws in place: A draws 1 then 3, B draws 2. A keeps the 3 and ranks first.
+    expect(assignRandomPoints(['A', 'B', 'A'], () => 1)).toEqual([
+      { entrant: 'A', points: 2 },
+      { entrant: 'B', points: 1 },
+    ]);
+
+    for (let i = 0; i < 50; i++) {
+      const result = assignRandomPoints(['A', 'B', 'C', 'D', 'A', 'C', 'D']);
+      expect(result.map((r) => r.entrant).sort()).toEqual(['A', 'B', 'C', 'D']);
+      expect(result.map((r) => r.points)).toEqual([4, 3, 2, 1]);
+    }
+  });
+
+  it('lifts the odds of a second listing without guaranteeing the top score', () => {
+    // A wins unless B's single draw is the 3: A should take the top spot about two times in three.
+    let wins = 0;
+    for (let i = 0; i < 400; i++) {
+      if (assignRandomPoints(['A', 'B', 'A'])[0].entrant === 'A') wins++;
+    }
+    expect(wins).toBeGreaterThan(200);
+    expect(wins).toBeLessThan(400);
+  });
+});
+
+describe('timingMedals', () => {
+  const BASE = 1740996000;
+  const entrant = (user_id: string, offset: number) => ({ user_id, message_ts: (BASE + offset).toFixed(6) });
+  const medalsOf = (offsets: number[], rng?: () => number) => {
+    const sorted = offsets.map((o, i) => entrant(`U${i + 1}`, o));
+    return Object.fromEntries(Array.from(timingMedals(sorted, rng), ([e, kind]) => [e.user_id, kind]));
+  };
+
+  it('awards nothing with no entrants', () => {
+    expect(medalsOf([])).toEqual({});
+  });
+
+  it('gives a solo entrant one medal, and two entrants first and last', () => {
+    expect(medalsOf([10])).toEqual({ U1: 'first' });
+    expect(medalsOf([10, 562])).toEqual({ U1: 'first', U2: 'last' });
+  });
+
+  it('gives three entrants all three medals', () => {
+    expect(medalsOf([10, 500, 562])).toEqual({ U1: 'first', U2: 'middle', U3: 'last' });
+  });
+
+  it('gives the middle to the entrant nearest the halfway point between first and last', () => {
+    // Halfway is 286s. The only candidate after it is the last entrant, who is discarded.
+    expect(medalsOf([10, 60, 270, 562])).toEqual({ U1: 'first', U3: 'middle', U4: 'last' });
+    // Nearest before (60, 226s away) loses to nearest after (300, 14s away).
+    expect(medalsOf([10, 60, 300, 562])).toEqual({ U1: 'first', U3: 'middle', U4: 'last' });
+    // Only the nearest on each side is a candidate: 3 beats 0..2 as well as the discarded last.
+    expect(medalsOf([0, 1, 2, 3, 100])).toEqual({ U1: 'first', U4: 'middle', U5: 'last' });
+  });
+
+  it('settles an exact tie for the middle on the rng', () => {
+    // Halfway is 200s; 100 and 300 are both 100s away.
+    expect(medalsOf([0, 100, 300, 400], () => 0)).toEqual({ U1: 'first', U2: 'middle', U4: 'last' });
+    expect(medalsOf([0, 100, 300, 400], () => 0.9)).toEqual({ U1: 'first', U3: 'middle', U4: 'last' });
   });
 });
