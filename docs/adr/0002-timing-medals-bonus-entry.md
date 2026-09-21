@@ -47,7 +47,9 @@ a medallist's points. Both are displays of the stored label; the bot never reads
   would make the two meanings collide.
 - **Bonus entries appended in post order.** Appending in medal order (first, last, middle) would
   change how a seeded draw consumes its `rng` and so which entrant a fixed sequence favours. Post
-  order keeps a duplicate-free draw byte-identical to the previous build for any `rng`.
+  order keeps the draw deterministic for a given `rng`. Every game with entrants now has at least
+  one medallist, so a seeded draw consumes more `rng` calls than the previous build and its
+  outcome differs for the same seed.
 - **No configuration.** The emoji and the three medal kinds are constants. The legacy orchestration
   is frozen by ADR 0001 and does not call `resolveGame`, so it is unaffected.
 
@@ -57,8 +59,10 @@ a medallist's points. Both are displays of the stored label; the bot never reads
   load unchanged; the field is never required.
 - Days already settled are never re-scored. The rule applies from the first settle after deploy.
 - The points ceiling and the "no gaps" guarantee are unchanged, so every existing test that pins
-  exact point values still holds. Only the seeded-draw feature test depends on the post-order
-  choice above.
+  exact point values still holds. The seeded-draw feature test depends on the post-order choice
+  above.
+- Timestamps are compared in integer microseconds, so an exact tie for the middle is detected
+  exactly and settled on `rng`, not lost to floating-point rounding on ten-digit epoch seconds.
 
 ## Alternatives rejected
 

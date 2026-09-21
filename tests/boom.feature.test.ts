@@ -598,6 +598,27 @@ describe('Boom feature integration-like behavior', () => {
     });
   });
 
+  it('treats a medal name Slack rejects as applied instead of retrying forever', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:00') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:01') });
+
+    const invalidName: any = new Error('An API error occurred: invalid_name');
+    invalidName.data = { ok: false, error: 'invalid_name' };
+    t.control.failReactionIf = (args: any) => (args.name === 'medal' ? invalidName : false);
+    await closeWindows();
+
+    expect(reactions(t, 'first_place_medal').length).toBe(2);
+    expect(readStore().medalled['2025-03-03']).toEqual({
+      boom: expect.any(String),
+      hadeda: expect.any(String),
+    });
+
+    const attempts = reactions(t, 'medal').length;
+    await t.triggerMessage({ text: 'hello again', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:45:00') });
+    expect(reactions(t, 'medal').length).toBe(attempts);
+  });
+
   it('retries a lost Friday crown without re-posting the daily results', async () => {
     const t = bootAt('2025-03-07T12:00:00');
     await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-07T12:00:00') });
