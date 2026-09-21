@@ -62,7 +62,7 @@ posts its emoji inside one fixed window, then hands out points at random.
     three. Medals are per game: `boom`, `hadeda` and `wednesday` each pick their own.
   - Medals are decided from the stored timestamps at settle time, never on arrival, so late or
     out-of-order delivery cannot hand "first" to the wrong person. The medallists are recorded on
-    the awards (`medal: "first" | "last" | "middle"`); the `:medal:` reaction is only a display of
+    the awards (`medal: "first" | "last" | "middle"`); the `:sports_medal:` reaction is only a display of
     that record, and a reaction someone adds by hand changes nothing.
 - Point assignment:
   - Each medallist is listed twice in the draw. With `n` entrants and `k` medallists that is
@@ -74,7 +74,7 @@ posts its emoji inside one fixed window, then hands out points at random.
   - The assignment is written once to `awards[date][game]` and is never re-rolled — restarts,
     re-announcements and leaderboard queries all read the same stored result.
   - Medal reactions go out in one pass per game: `:first_place_medal:` … to the three biggest
-    point earners' messages, then `:medal:` to every timing medallist's message.
+    point earners' messages, then `:sports_medal:` to every timing medallist's message.
     Because the awards are flushed before the reactions are sent, medals are marked done in
     `medalled[date][game]` only once every reaction has landed; a crash or Slack failure in between
     leaves them outstanding and the next catch-up re-applies them. A medal already on the message
@@ -117,7 +117,7 @@ posts its emoji inside one fixed window, then hands out points at random.
 - Troubleshooting:
   - Points look wrong: check `awards[date][game]` in `data/store.json`; it is the single source of
     truth for scoring, and `awarded_at` shows when the window closed. To see who drew a bonus
-    entry, look for `medal` on the awards; the `:medal:` reaction on a message proves nothing.
+    entry, look for `medal` on the awards; the `:sports_medal:` reaction on a message proves nothing.
   - Results never posted: confirm every required game for that date has an `awards` entry. A game
     nobody entered gets an empty `awards` array at 12:10:05; if one is missing entirely, the day
     had no entrants at all (nothing to announce) or the process was down across 12:10 and has seen
