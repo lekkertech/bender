@@ -50,12 +50,31 @@ posts its emoji inside one fixed window, then hands out points at random.
     therefore equals the number of entrants.
   - Any game emoji outside the window — before 12:00, after 12:10, or later in the noon hour —
     gets `:clown_face:` and scores nothing.
+- Timing medals:
+  - When the window shuts, each game's entrants are sorted by message `ts` and up to three
+    **timing medallists** are picked: the **first** to post, the **last** to post, and the
+    **middle**. The middle is found by taking the exact halfway point between the first and last
+    timestamps, then looking at the nearest entrant before it and the nearest after it. First and
+    last are discarded as candidates. Nobody left: no middle medal. One left: they get it. Two
+    left: the closer one gets it, and an exact tie is settled by the same random source as the
+    points draw (`timingMedals` in `rules.ts`).
+  - So one entrant holds one medal (first), two hold first and last, and three or more hold all
+    three. Medals are per game: `boom`, `hadeda` and `wednesday` each pick their own.
+  - Medals are decided from the stored timestamps at settle time, never on arrival, so late or
+    out-of-order delivery cannot hand "first" to the wrong person. The medallists are recorded on
+    the awards (`medal: "first" | "last" | "middle"`); the `:medal:` reaction is only a display of
+    that record, and a reaction someone adds by hand changes nothing.
 - Point assignment:
-  - When the window shuts, the `n` entrants of each game are given a random permutation of `1..n`:
-    one gets `n`, another `n-1`, down to `1`. No duplicates, no gaps, no ties.
+  - Each medallist is listed twice in the draw. With `n` entrants and `k` medallists that is
+    `n + k` entries, each drawing a distinct value. An entrant listed twice keeps their better
+    draw; the `n` distinct entrants are then ranked by that draw and scored `n..1`: one gets `n`,
+    another `n-1`, down to `1`. No duplicates, no gaps, no ties. A medal lifts a player's odds of
+    a high rank but never raises the ceiling above the entrant count, and a solo entrant still
+    scores 1.
   - The assignment is written once to `awards[date][game]` and is never re-rolled — restarts,
     re-announcements and leaderboard queries all read the same stored result.
-  - Medal reactions (`:first_place_medal:` …) go to the three biggest point earners' messages.
+  - Medal reactions go out in one pass per game: `:first_place_medal:` … to the three biggest
+    point earners' messages, then `:medal:` to every timing medallist's message.
     Because the awards are flushed before the reactions are sent, medals are marked done in
     `medalled[date][game]` only once every reaction has landed; a crash or Slack failure in between
     leaves them outstanding and the next catch-up re-applies them. A medal already on the message
@@ -96,7 +115,8 @@ posts its emoji inside one fixed window, then hands out points at random.
     never leak into `@bot leaderboard` mid-window.
 - Troubleshooting:
   - Points look wrong: check `awards[date][game]` in `data/store.json`; it is the single source of
-    truth for scoring, and `awarded_at` shows when the window closed.
+    truth for scoring, and `awarded_at` shows when the window closed. To see who drew a bonus
+    entry, look for `medal` on the awards; the `:medal:` reaction on a message proves nothing.
   - Results never posted: confirm every required game for that date has an `awards` entry. A game
     nobody entered gets an empty `awards` array at 12:10:05; if one is missing entirely, the day
     had no entrants at all (nothing to announce) or the process was down across 12:10 and has seen
@@ -118,7 +138,7 @@ Key points:
   - Podium helpers (`getPlacements`, `placementsCount`, `getPodiumMessages`, `PODIUM_WEIGHTS`) serve legacy mode and score any date stamped `legacy`.
 - Data model:
   - Raw message ledger stored under `messages[date][game]` (each item: `user_id`, `channel_id`, `message_ts`, `created_at`).
-  - Settled scores stored under `awards[date][game]` (each item: `user_id`, `points`, `channel_id`, `message_ts`, `awarded_at`).
+  - Settled scores stored under `awards[date][game]` (each item: `user_id`, `points`, `channel_id`, `message_ts`, `awarded_at`, and `medal` on a timing medallist: `first`, `last` or `middle`).
   - `medalled[date][game]` records when medal reactions were successfully applied.
   - `scoring[date]` records which mechanism scored a date, written by `addEntry` (`random`) or `addPlacement` (`legacy`).
   - `random_scoring_from` is a read-only remnant of an earlier build's one-way cutover; nothing writes it any more.
