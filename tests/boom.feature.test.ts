@@ -379,11 +379,49 @@ describe('Boom feature integration-like behavior', () => {
     expect(medalFor('first_place_medal')).toEqual([second, toTs('2025-03-03T12:00:04')]);
     expect(medalFor('second_place_medal')).toEqual([first]);
     expect(medalFor('third_place_medal')).toEqual([third]);
+    // Three boom entrants are first, middle and last; the solo hadeda entrant is first
+    expect(medalFor('medal').sort()).toEqual([first, second, third, toTs('2025-03-03T12:00:04')]);
 
     const text = postsMatching(t, 'Boom Game — Daily Podium')[0].text as string;
-    expect(text).toContain(':boom: 1) User U2 +3pt  2) User U1 +2pt  3) User U3 +1pt');
+    expect(text).toContain(':boom: 1) User U2 +3pt :medal:  2) User U1 +2pt :medal:  3) User U3 +1pt :medal:');
     // Only one entrant in hadeda: it takes gold and 1 point
-    expect(text).toContain(':hadeda-boom: 1) User U4 +1pt');
+    expect(text).toContain(':hadeda-boom: 1) User U4 +1pt :medal:');
+  });
+
+  it('marks the first, last and middle to post with a timing medal, and says so in the results', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    // Halfway between 12:00:10 and 12:09:00 is 12:04:35: U3 at 12:04:30 is nearer than U4 at 12:06:00
+    const times: Record<string, string> = {
+      U1: '12:00:10', U2: '12:01:00', U3: '12:04:30', U4: '12:06:00', U5: '12:09:00',
+    };
+    for (const [user, time] of Object.entries(times)) {
+      await t.triggerMessage({ text: ':boom:', user, channel: 'C1', ts: toTs(`2025-03-03T${time}`) });
+    }
+    const hadedaTs = [toTs('2025-03-03T12:02:00'), toTs('2025-03-03T12:03:00')];
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U6', channel: 'C1', ts: hadedaTs[0] });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U7', channel: 'C1', ts: hadedaTs[1] });
+
+    expect(reactions(t, 'medal')).toEqual([]);
+    await closeWindows();
+
+    const medalled = reactions(t, 'medal').map((r) => r.timestamp).sort();
+    const expected = [times.U1, times.U3, times.U5].map((time) => toTs(`2025-03-03T${time}`));
+    expect(medalled).toEqual([...expected, ...hadedaTs].sort());
+
+    // The bot tracks medallists in the awards, not by reading reactions back
+    const awards = readStore().awards['2025-03-03'];
+    const labels = (game: string) => Object.fromEntries(awards[game].map((a: any) => [a.user_id, a.medal]));
+    expect(labels('boom')).toEqual({ U1: 'first', U3: 'middle', U5: 'last', U2: undefined, U4: undefined });
+    expect(labels('hadeda')).toEqual({ U6: 'first', U7: 'last' });
+    // Still exactly 1..n: the bonus entry lifts the odds, not the ceiling
+    expect(awards.boom.map((a: any) => a.points).sort()).toEqual([1, 2, 3, 4, 5]);
+
+    const text = postsMatching(t, 'Boom Game — Daily Podium')[0].text as string;
+    const boomLine = text.split('\n').find((l) => l.startsWith('• :boom: '))!;
+    expect(boomLine.match(/:medal:/g)).toHaveLength(3);
+    for (const u of ['U1', 'U3', 'U5']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt :medal:`));
+    for (const u of ['U2', 'U4']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt(?! :medal:)`));
+    expect(parseAwards(text, ':boom:').map((a) => a.name).sort()).toEqual(['User U1', 'User U2', 'User U3', 'User U4', 'User U5']);
   });
 
   it('ignores and clowns repeat posts from a user who already has an entry', async () => {
@@ -515,13 +553,14 @@ describe('Boom feature integration-like behavior', () => {
     await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: boomTs });
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: hadedaTs });
 
-    // Both games' medals fail as they settle. Points are already flushed at that moment, so
-    // without a retry the medals would be lost for good.
-    let medalFailures = 2;
-    t.control.failReactionIf = (args: any) => String(args.name).endsWith('_place_medal') && medalFailures-- > 0;
+    // Both games' medals (gold and the timing medal, one solo entrant each) fail as they settle.
+    // Points are already flushed at that moment, so without a retry the medals would be lost for good.
+    let medalFailures = 4;
+    t.control.failReactionIf = (args: any) => /medal$/.test(String(args.name)) && medalFailures-- > 0;
     await closeWindows();
 
     expect(reactions(t, 'first_place_medal')).toEqual([]);
+    expect(reactions(t, 'medal')).toEqual([]);
     expect(readStore().medalled['2025-03-03']).toBeUndefined();
     // The day itself is settled and announced regardless
     expect(postsMatching(t, 'Daily Podium').length).toBe(1);
@@ -529,6 +568,7 @@ describe('Boom feature integration-like behavior', () => {
     // The next message retries just the medals
     await t.triggerMessage({ text: 'hello', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:40:00') });
     expect(reactions(t, 'first_place_medal').map((r) => r.timestamp).sort()).toEqual([boomTs, hadedaTs].sort());
+    expect(reactions(t, 'medal').map((r) => r.timestamp).sort()).toEqual([boomTs, hadedaTs].sort());
     expect(readStore().medalled['2025-03-03']).toEqual({
       boom: expect.any(String),
       hadeda: expect.any(String),
@@ -538,6 +578,7 @@ describe('Boom feature integration-like behavior', () => {
     // Once marked, they are never re-applied
     await t.triggerMessage({ text: 'hello again', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:45:00') });
     expect(reactions(t, 'first_place_medal').length).toBe(2);
+    expect(reactions(t, 'medal').length).toBe(2);
   });
 
   it('treats a medal that is already on the message as applied', async () => {
@@ -548,8 +589,7 @@ describe('Boom feature integration-like behavior', () => {
     // Slack rejects a reaction that is already there; that must not loop forever as a "failure"
     const alreadyReacted: any = new Error('An API error occurred: already_reacted');
     alreadyReacted.data = { ok: false, error: 'already_reacted' };
-    t.control.failReactionIf = (args: any) =>
-      String(args.name).endsWith('_place_medal') ? alreadyReacted : false;
+    t.control.failReactionIf = (args: any) => (/medal$/.test(String(args.name)) ? alreadyReacted : false);
     await closeWindows();
 
     expect(readStore().medalled['2025-03-03']).toEqual({

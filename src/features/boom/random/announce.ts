@@ -63,7 +63,7 @@ async function podiumLine(db: Store, getName: NameResolver, date: string, game: 
   const awards = db.getAwards(date, game);
   if (!awards.length) return `• ${GAME_EMOJI[game]} — no entries`;
   const rendered = await Promise.all(
-    awards.map(async (a, i) => `${i + 1}) ${await getName(a.user_id)} +${a.points}pt`),
+    awards.map(async (a, i) => `${i + 1}) ${await getName(a.user_id)} +${a.points}pt${a.medal ? ' :medal:' : ''}`),
   );
   return `• ${GAME_EMOJI[game]} ${rendered.join('  ')}`;
 }
