@@ -90,8 +90,10 @@ export async function catchUp(s: Settler, io: Io) {
   await announceEach(s, io, s.db.pendingAnnouncements());
 }
 
-function isAlreadyReacted(err: any): boolean {
-  return err?.data?.error === 'already_reacted' || err?.message === 'already_reacted';
+const PERMANENT_REACTION_ERRORS = new Set(['already_reacted', 'invalid_name']);
+
+function isPermanentlySettled(err: any): boolean {
+  return PERMANENT_REACTION_ERRORS.has(err?.data?.error) || PERMANENT_REACTION_ERRORS.has(err?.message);
 }
 
 async function addMedal(client: any, award: Award, medal: string): Promise<unknown | null> {
@@ -100,7 +102,7 @@ async function addMedal(client: any, award: Award, medal: string): Promise<unkno
     await client.reactions.add({ channel: award.channel_id, timestamp: award.message_ts, name: medal });
     return null;
   } catch (err) {
-    return isAlreadyReacted(err) ? null : err;
+    return isPermanentlySettled(err) ? null : err;
   }
 }
 

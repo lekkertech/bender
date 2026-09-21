@@ -78,7 +78,8 @@ posts its emoji inside one fixed window, then hands out points at random.
     Because the awards are flushed before the reactions are sent, medals are marked done in
     `medalled[date][game]` only once every reaction has landed; a crash or Slack failure in between
     leaves them outstanding and the next catch-up re-applies them. A medal already on the message
-    (`already_reacted`) counts as landed.
+    (`already_reacted`) counts as landed, and so does a name Slack rejects outright (`invalid_name`):
+    retrying either can never succeed, so neither blocks the game's medals from being marked done.
 - Announcement:
   - Daily results post once every game required that day has settled (Wednesdays require
     `wednesday` too). The Friday crown follows the Friday results.

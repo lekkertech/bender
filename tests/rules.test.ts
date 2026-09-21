@@ -222,4 +222,17 @@ describe('timingMedals', () => {
     expect(medalsOf([0, 100, 300, 400], () => 0)).toEqual({ U1: 'first', U2: 'middle', U4: 'last' });
     expect(medalsOf([0, 100, 300, 400], () => 0.9)).toEqual({ U1: 'first', U3: 'middle', U4: 'last' });
   });
+
+  it('sees an exact microsecond tie on real Slack timestamps', () => {
+    const sorted = [
+      { user_id: 'U1', message_ts: '1757409424.623851' },
+      { user_id: 'U2', message_ts: '1757409627.294299' },
+      { user_id: 'U3', message_ts: '1757409689.490159' },
+      { user_id: 'U4', message_ts: '1757409892.160607' },
+    ];
+    const winner = (rng: () => number) =>
+      Array.from(timingMedals(sorted, rng)).find(([, kind]) => kind === 'middle')![0].user_id;
+    expect(winner(() => 0)).toBe('U2');
+    expect(winner(() => 0.9)).toBe('U3');
+  });
 });

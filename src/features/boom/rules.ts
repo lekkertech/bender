@@ -114,15 +114,20 @@ export function timingMedals<T extends { message_ts: string }>(
   return medals;
 }
 
+function tsMicros(message_ts: string): number {
+  const [seconds, fraction = ''] = message_ts.split('.');
+  return Number(seconds) * 1_000_000 + Number(fraction.padEnd(6, '0').slice(0, 6));
+}
+
 function middleOf<T extends { message_ts: string }>(sorted: readonly T[], rng: () => number): T | null {
   const interior = sorted.slice(1, -1);
   if (!interior.length) return null;
-  const ts = (e: T) => Number(e.message_ts);
-  const halfway = (ts(sorted[0]!) + ts(sorted[sorted.length - 1]!)) / 2;
-  const before = interior.filter((e) => ts(e) <= halfway).pop();
-  const after = interior.find((e) => ts(e) > halfway);
+  const ts = (e: T) => tsMicros(e.message_ts);
+  const twiceHalfway = ts(sorted[0]!) + ts(sorted[sorted.length - 1]!);
+  const before = interior.filter((e) => 2 * ts(e) <= twiceHalfway).pop();
+  const after = interior.find((e) => 2 * ts(e) > twiceHalfway);
   if (!before || !after) return before || after || null;
-  const lead = (ts(after) - halfway) - (halfway - ts(before));
+  const lead = ts(after) + ts(before) - twiceHalfway;
   if (lead !== 0) return lead > 0 ? before : after;
   return rng() < 0.5 ? before : after;
 }
