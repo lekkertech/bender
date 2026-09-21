@@ -4,6 +4,8 @@ import { announceDay } from './announce.js';
 
 const SWEEP_INTERVAL_MS = 30 * 1000;
 const PODIUM_MEDALS = ['first_place_medal', 'second_place_medal', 'third_place_medal'] as const;
+/** Marks the first, last and middle to post: the entrants whose bonus entry went into the draw. */
+const TIMING_MEDAL = 'medal';
 
 export type Io = { client: any; logger?: any };
 
@@ -102,15 +104,20 @@ async function addMedal(client: any, award: Award, medal: string): Promise<unkno
   }
 }
 
+/** Podium medals for the three biggest earners (awards are sorted by points), then a timing medal each. */
+function medalTargets(awards: Award[]): Array<{ award: Award; medal: string }> {
+  const podium = PODIUM_MEDALS.flatMap((medal, i) => (awards[i] ? [{ award: awards[i]!, medal }] : []));
+  const timing = awards.filter((a) => a.medal).map((award) => ({ award, medal: TIMING_MEDAL }));
+  return [...podium, ...timing];
+}
+
 async function applyMedals(db: Store, io: Io, date: string, game: Game) {
   if (db.hasMedalled(date, game)) return;
   const awards = db.getAwards(date, game);
   if (!awards.length) return;
 
   let failed = false;
-  for (const [i, medal] of PODIUM_MEDALS.entries()) {
-    const award = awards[i];
-    if (!award) continue;
+  for (const { award, medal } of medalTargets(awards)) {
     const err = await addMedal(io.client, award, medal);
     if (!err) continue;
     failed = true;
