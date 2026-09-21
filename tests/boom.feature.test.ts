@@ -769,6 +769,31 @@ describe('Boom feature integration-like behavior', () => {
       awards.hadeda.find((a: any) => a.user_id === 'U1').points;
     expect(board[0].text).toContain(`User U1 — ${u1} pt`);
   });
+
+  it('lists every player with points this week, not only the first ten', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    const users = Array.from({ length: 12 }, (_, i) => `U${String(i + 1).padStart(2, '0')}`);
+    for (const [i, u] of users.entries()) {
+      await t.triggerMessage({ text: ':boom:', user: u, channel: 'C1', ts: toTs('2025-03-03T12:00:00', i + 1) });
+    }
+    await closeWindows();
+
+    const daily = postsMatching(t, 'Leaderboard (week-to-date):');
+    expect(daily.length).toBe(1);
+    for (const u of users) expect(daily[0].text).toContain(`User ${u} — `);
+
+    await t.triggerEvent('app_mention', {
+      type: 'app_mention',
+      user: 'U01',
+      channel: 'C1',
+      text: '<@UBOT> leaderboard',
+      ts: toTs('2025-03-03T13:00:00'),
+    });
+    const board = postsMatching(t, 'Boom Game — Leaderboard (week-to-date)');
+    expect(board.length).toBe(1);
+    for (const u of users) expect(board[0].text).toContain(`User ${u} — `);
+    expect(board[0].text).toContain('12. ');
+  });
 });
 
 /**

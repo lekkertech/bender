@@ -59,7 +59,7 @@ async function leaderboardSection(rows: WeeklyRow[], getName: NameResolver): Pro
   }
   const fallback: string[] = [];
   const lines = await Promise.all(
-    rows.slice(0, 10).map(async (row, idx) => {
+    rows.map(async (row, idx) => {
       const rank = idx + 1;
       const name = await getName(row.user_id);
       const unit = pointsUnit(row.points);

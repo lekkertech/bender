@@ -116,7 +116,7 @@ export function registerLegacyBoom(app: App, cfg: Config, db: Store) {
       lines.push('');
       lines.push('Leaderboard (week-to-date):');
       let rank = 1;
-      for (const row of leaderboard.slice(0, 10)) {
+      for (const row of leaderboard) {
         lines.push(`${rank}. ${await getName(row.user_id)} — ${row.points} pt${row.points === 1 ? '' : 's'}`);
         rank++;
       }

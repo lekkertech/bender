@@ -72,7 +72,7 @@ async function leaderboardLines(getName: NameResolver, week: Week): Promise<stri
   if (!week.board.length) return [];
   const lines = ['', 'Leaderboard (week-to-date):'];
   let rank = 1;
-  for (const row of week.board.slice(0, 10)) {
+  for (const row of week.board) {
     lines.push(`${rank}. ${await getName(row.user_id)} — ${row.points} ${pointsUnit(row.points)}`);
     rank++;
   }
