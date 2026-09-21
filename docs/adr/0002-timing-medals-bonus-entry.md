@@ -29,9 +29,9 @@ draw, collapses a player listed twice to their better draw, and then scores the 
 players `n..1` by rank. A game's values are still exactly `1..n`; the medal lifts the odds of a
 high rank and nothing else. A solo entrant scores 1.
 
-The medallists are recorded on the awards as `medal: "first" | "last" | "middle"`. A `:medal:`
+The medallists are recorded on the awards as `medal: "first" | "last" | "middle"`. A `:sports_medal:`
 reaction goes on each medallist's message in the same pass that puts the podium medals on the top
-three earners, sharing its `medalled[date][game]` retry. The daily results append `:medal:` after
+three earners, sharing its `medalled[date][game]` retry. The daily results append `:sports_medal:` after
 a medallist's points. Both are displays of the stored label; the bot never reads reactions back.
 
 ### Choices made for the smallest change
@@ -43,7 +43,7 @@ a medallist's points. Both are displays of the stored label; the bot never reads
   reuses the existing timer, catch-up and medal retry paths and adds no new state beyond the label.
   The cost is that nobody sees a medal during the window.
 - **A new emoji, and the podium medals stay.** `:first_place_medal:` and friends say who scored
-  most and match the leaderboard headings; `:medal:` says who drew twice. Reusing one for the other
+  most and match the leaderboard headings; `:sports_medal:` says who drew twice. Reusing one for the other
   would make the two meanings collide.
 - **Bonus entries appended in post order.** Appending in medal order (first, last, middle) would
   change how a seeded draw consumes its `rng` and so which entrant a fixed sequence favours. Post

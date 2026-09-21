@@ -5,7 +5,7 @@ import { announceDay } from './announce.js';
 const SWEEP_INTERVAL_MS = 30 * 1000;
 const PODIUM_MEDALS = ['first_place_medal', 'second_place_medal', 'third_place_medal'] as const;
 /** Marks the first, last and middle to post: the entrants whose bonus entry went into the draw. */
-const TIMING_MEDAL = 'medal';
+const TIMING_MEDAL = 'sports_medal';
 
 export type Io = { client: any; logger?: any };
 

@@ -380,12 +380,12 @@ describe('Boom feature integration-like behavior', () => {
     expect(medalFor('second_place_medal')).toEqual([first]);
     expect(medalFor('third_place_medal')).toEqual([third]);
     // Three boom entrants are first, middle and last; the solo hadeda entrant is first
-    expect(medalFor('medal').sort()).toEqual([first, second, third, toTs('2025-03-03T12:00:04')]);
+    expect(medalFor('sports_medal').sort()).toEqual([first, second, third, toTs('2025-03-03T12:00:04')]);
 
     const text = postsMatching(t, 'Boom Game — Daily Podium')[0].text as string;
-    expect(text).toContain(':boom: 1) User U2 +3pt :medal:  2) User U1 +2pt :medal:  3) User U3 +1pt :medal:');
+    expect(text).toContain(':boom: 1) User U2 +3pt :sports_medal:  2) User U1 +2pt :sports_medal:  3) User U3 +1pt :sports_medal:');
     // Only one entrant in hadeda: it takes gold and 1 point
-    expect(text).toContain(':hadeda-boom: 1) User U4 +1pt :medal:');
+    expect(text).toContain(':hadeda-boom: 1) User U4 +1pt :sports_medal:');
   });
 
   it('marks the first, last and middle to post with a timing medal, and says so in the results', async () => {
@@ -401,10 +401,10 @@ describe('Boom feature integration-like behavior', () => {
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U6', channel: 'C1', ts: hadedaTs[0] });
     await t.triggerMessage({ text: ':hadeda-boom:', user: 'U7', channel: 'C1', ts: hadedaTs[1] });
 
-    expect(reactions(t, 'medal')).toEqual([]);
+    expect(reactions(t, 'sports_medal')).toEqual([]);
     await closeWindows();
 
-    const medalled = reactions(t, 'medal').map((r) => r.timestamp).sort();
+    const medalled = reactions(t, 'sports_medal').map((r) => r.timestamp).sort();
     const expected = [times.U1, times.U3, times.U5].map((time) => toTs(`2025-03-03T${time}`));
     expect(medalled).toEqual([...expected, ...hadedaTs].sort());
 
@@ -418,9 +418,9 @@ describe('Boom feature integration-like behavior', () => {
 
     const text = postsMatching(t, 'Boom Game — Daily Podium')[0].text as string;
     const boomLine = text.split('\n').find((l) => l.startsWith('• :boom: '))!;
-    expect(boomLine.match(/:medal:/g)).toHaveLength(3);
-    for (const u of ['U1', 'U3', 'U5']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt :medal:`));
-    for (const u of ['U2', 'U4']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt(?! :medal:)`));
+    expect(boomLine.match(/:sports_medal:/g)).toHaveLength(3);
+    for (const u of ['U1', 'U3', 'U5']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt :sports_medal:`));
+    for (const u of ['U2', 'U4']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt(?! :sports_medal:)`));
     expect(parseAwards(text, ':boom:').map((a) => a.name).sort()).toEqual(['User U1', 'User U2', 'User U3', 'User U4', 'User U5']);
   });
 
@@ -560,7 +560,7 @@ describe('Boom feature integration-like behavior', () => {
     await closeWindows();
 
     expect(reactions(t, 'first_place_medal')).toEqual([]);
-    expect(reactions(t, 'medal')).toEqual([]);
+    expect(reactions(t, 'sports_medal')).toEqual([]);
     expect(readStore().medalled['2025-03-03']).toBeUndefined();
     // The day itself is settled and announced regardless
     expect(postsMatching(t, 'Daily Podium').length).toBe(1);
@@ -568,7 +568,7 @@ describe('Boom feature integration-like behavior', () => {
     // The next message retries just the medals
     await t.triggerMessage({ text: 'hello', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:40:00') });
     expect(reactions(t, 'first_place_medal').map((r) => r.timestamp).sort()).toEqual([boomTs, hadedaTs].sort());
-    expect(reactions(t, 'medal').map((r) => r.timestamp).sort()).toEqual([boomTs, hadedaTs].sort());
+    expect(reactions(t, 'sports_medal').map((r) => r.timestamp).sort()).toEqual([boomTs, hadedaTs].sort());
     expect(readStore().medalled['2025-03-03']).toEqual({
       boom: expect.any(String),
       hadeda: expect.any(String),
@@ -578,7 +578,7 @@ describe('Boom feature integration-like behavior', () => {
     // Once marked, they are never re-applied
     await t.triggerMessage({ text: 'hello again', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:45:00') });
     expect(reactions(t, 'first_place_medal').length).toBe(2);
-    expect(reactions(t, 'medal').length).toBe(2);
+    expect(reactions(t, 'sports_medal').length).toBe(2);
   });
 
   it('treats a medal that is already on the message as applied', async () => {
@@ -605,7 +605,7 @@ describe('Boom feature integration-like behavior', () => {
 
     const invalidName: any = new Error('An API error occurred: invalid_name');
     invalidName.data = { ok: false, error: 'invalid_name' };
-    t.control.failReactionIf = (args: any) => (args.name === 'medal' ? invalidName : false);
+    t.control.failReactionIf = (args: any) => (args.name === 'sports_medal' ? invalidName : false);
     await closeWindows();
 
     expect(reactions(t, 'first_place_medal').length).toBe(2);
@@ -614,9 +614,9 @@ describe('Boom feature integration-like behavior', () => {
       hadeda: expect.any(String),
     });
 
-    const attempts = reactions(t, 'medal').length;
+    const attempts = reactions(t, 'sports_medal').length;
     await t.triggerMessage({ text: 'hello again', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:45:00') });
-    expect(reactions(t, 'medal').length).toBe(attempts);
+    expect(reactions(t, 'sports_medal').length).toBe(attempts);
   });
 
   it('retries a lost Friday crown without re-posting the daily results', async () => {
