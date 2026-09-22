@@ -43,9 +43,11 @@ export type { Award } from './store-data.js';
 
 type DueSettlement = { date: string; game: Game; channel_id: string };
 
-function toAward(entrant: Winner, points: number, awarded_at: string, medal?: MedalKind): Award {
+type Drawn = { entrant: Winner; points: number; draws: number[] };
+
+function toAward({ entrant, points, draws }: Drawn, awarded_at: string, medal?: MedalKind): Award {
   const { user_id, channel_id, message_ts } = entrant;
-  const award: Award = { user_id, points, channel_id, message_ts, awarded_at };
+  const award: Award = { user_id, points, channel_id, message_ts, awarded_at, draws };
   return medal ? { ...award, medal } : award;
 }
 
@@ -181,8 +183,8 @@ export class Store {
     const medals = timingMedals(entrants, rng);
     const awarded_at = DateTime.now().toISO()!;
     const bonus = entrants.filter((e) => medals.has(e));
-    const awards = assignRandomPoints([...entrants, ...bonus], rng).map(({ entrant, points }) =>
-      toAward(entrant, points, awarded_at, medals.get(entrant)),
+    const awards = assignRandomPoints([...entrants, ...bonus], rng).map((drawn) =>
+      toAward(drawn, awarded_at, medals.get(drawn.entrant)),
     );
 
     setNested(this.data.awards ||= {}, date, game, awards);

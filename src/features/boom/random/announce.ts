@@ -3,10 +3,12 @@ import type { Store } from '../store.js';
 import { GAME_EMOJI, isFriday, neededGamesForDate, weekKeyFor, weekStartEnd, type Game } from '../rules.js';
 import { pointsUnit, type NameResolver, type WeeklyRow } from '../leaderboard.js';
 import type { Io, Settler } from './settle.js';
+import { AUDIT_INTRO, gameAuditLines } from './audit.js';
 
 type Week = { start: string; end: string; board: WeeklyRow[] };
 type DayTarget = { date: string; channel: string; neededGames: Game[]; week: Week };
 type Owed = { results: boolean; crown: boolean };
+type Poster = { client: any; getName: NameResolver };
 
 function owedFor(db: Store, date: string): Owed {
   return {
@@ -43,20 +45,30 @@ export async function announceDay(s: Settler, io: Io, date: string) {
 
 async function postOwed(db: Store, client: any, target: DayTarget, owed: Owed) {
   if (owed.results) {
-    await postDailyResults(db, client, target);
+    const out = { client, getName: makeDisplayNameResolver(client) };
+    const resultsTs = await postDailyResults(db, out, target);
     db.markDailyAnnounced(target.date);
+    await postAudit(db, out, target, resultsTs);
   }
   if (owed.crown) await postWeeklyCrown(db, client, target);
 }
 
-async function postDailyResults(db: Store, client: any, target: DayTarget) {
-  const getName = makeDisplayNameResolver(client);
+async function postDailyResults(db: Store, { client, getName }: Poster, target: DayTarget): Promise<string> {
   const lines = [`Boom Game — Daily Podium (${target.date})`];
   for (const game of target.neededGames) {
     lines.push(await podiumLine(db, getName, target.date, game));
   }
   lines.push(...(await leaderboardLines(getName, target.week)));
-  await client.chat.postMessage({ channel: target.channel, text: lines.join('\n') });
+  const posted = await client.chat.postMessage({ channel: target.channel, text: lines.join('\n') });
+  return posted.ts;
+}
+
+async function postAudit(db: Store, { client, getName }: Poster, target: DayTarget, thread_ts: string) {
+  const lines = [AUDIT_INTRO];
+  for (const game of target.neededGames) {
+    lines.push('', ...(await gameAuditLines(getName, game, db.getAwards(target.date, game))));
+  }
+  await client.chat.postMessage({ channel: target.channel, thread_ts, text: lines.join('\n') });
 }
 
 async function podiumLine(db: Store, getName: NameResolver, date: string, game: Game): Promise<string> {

@@ -72,7 +72,7 @@ export function neededGamesForDate(date: string): Game[] {
 export function assignRandomPoints<T>(
   entries: readonly T[],
   rng: () => number = Math.random,
-): Array<{ entrant: T; points: number }> {
+): Array<{ entrant: T; points: number; draws: number[] }> {
   const n = entries.length;
   const draws = Array.from({ length: n }, (_, i) => i + 1);
   // Fisher-Yates over the draw values, so each entry draws a distinct amount.
@@ -82,13 +82,12 @@ export function assignRandomPoints<T>(
     draws[i] = draws[j]!;
     draws[j] = tmp;
   }
-  const best = new Map<T, number>();
-  entries.forEach((entrant, i) => {
-    if ((best.get(entrant) ?? 0) < draws[i]!) best.set(entrant, draws[i]!);
-  });
-  return Array.from(best.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([entrant], rank, ranked) => ({ entrant, points: ranked.length - rank }));
+  const held = new Map<T, number[]>();
+  entries.forEach((entrant, i) => held.set(entrant, [...(held.get(entrant) ?? []), draws[i]!]));
+  return Array.from(held.entries())
+    .map(([entrant, tickets]) => ({ entrant, draws: tickets.sort((a, b) => b - a) }))
+    .sort((a, b) => b.draws[0]! - a.draws[0]!)
+    .map(({ entrant, draws: tickets }, rank, ranked) => ({ entrant, points: ranked.length - rank, draws: tickets }));
 }
 
 export type MedalKind = 'first' | 'last' | 'middle';
@@ -114,7 +113,7 @@ export function timingMedals<T extends { message_ts: string }>(
   return medals;
 }
 
-function tsMicros(message_ts: string): number {
+export function tsMicros(message_ts: string): number {
   const [seconds, fraction = ''] = message_ts.split('.');
   return Number(seconds) * 1_000_000 + Number(fraction.padEnd(6, '0').slice(0, 6));
 }

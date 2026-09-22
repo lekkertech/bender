@@ -83,6 +83,13 @@ posts its emoji inside one fixed window, then hands out points at random.
 - Announcement:
   - Daily results post once every game required that day has settled (Wednesdays require
     `wednesday` too). The Friday crown follows the Friday results.
+  - A draw audit follows as a thread reply under the results post. Per game it shows the player
+    and ticket counts, the halfway time used for the middle medal, and for each player the post
+    time to the millisecond, any medal, every ticket drawn, the ticket kept and the points. It is
+    rendered from `awards[date][game][].draws`, the tickets each player drew, stored at settle
+    time. A game settled before draws were stored renders as "scored before draws were recorded".
+    The results are marked announced before the audit posts, so a failed audit post is logged and
+    not retried, and never re-posts the results.
   - Every game of a date settles at the same instant, so a required game nobody entered settles
     empty at 12:10:05 and renders as `— no entries`. Without that the day's results — and, on a
     Friday, the week's crown — would stall forever on a game nobody played. Only a date somebody

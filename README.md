@@ -9,6 +9,7 @@ Minimal Slack bot using TypeScript and Slack Bolt. Defaults to Socket Mode (no p
   - One entry per player per emoji: accepted entries get a :white_check_mark: reaction to confirm they are in the tally
   - When the window closes, the `n` entrants each draw a unique random amount between 1 and `n` (3 people sending :boom: split 3/2/1 in random order; 9 people sending :hadeda-boom: split 9…1)
   - Timing medals: in each game the first to post, the last to post, and the entrant nearest the halfway point between them each get a bonus entry in the draw. A medallist is listed twice, keeps their better draw, and the `n` players are then scored `n`…1 as usual, so the bonus lifts the odds of a high rank without raising the ceiling. Medallists get a :sports_medal: reaction and a :sports_medal: marker in the results
+  - Draw audit: a thread reply under each daily results post explains the draw and lists, per game, every player's post time, medal, tickets drawn, the ticket kept and the points it earned
   - Post the daily results + week-to-date leaderboard (every player with points this week, no cap) once every game for the day has settled; :first_place_medal: / :second_place_medal: / :third_place_medal: go to the three biggest point earners
   - Crown weekly winner(s) once Friday’s games have settled; leaderboard resets weekly (Mon)
   - The bot adds a :clown_face: reaction (and ignores the message entirely) if a boom emoji is posted outside the 12:00–12:10 window, after the day’s points are assigned, or as a repeat by a player who already entered that game

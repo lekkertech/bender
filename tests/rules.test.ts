@@ -147,9 +147,9 @@ describe('assignRandomPoints', () => {
   it('is deterministic for a given rng and tolerates an rng returning 1', () => {
     const zeros = assignRandomPoints(['A', 'B', 'C'], () => 0);
     expect(zeros).toEqual([
-      { entrant: 'B', points: 3 },
-      { entrant: 'A', points: 2 },
-      { entrant: 'C', points: 1 },
+      { entrant: 'B', points: 3, draws: [3] },
+      { entrant: 'A', points: 2, draws: [2] },
+      { entrant: 'C', points: 1, draws: [1] },
     ]);
 
     // rng() === 1 must stay in range rather than swapping past the end of the array
@@ -165,8 +165,8 @@ describe('assignRandomPoints', () => {
   it('scores an entrant listed twice once, on its better draw, and still hands out exactly 1..n', () => {
     // rng() === 1 leaves the draws in place: A draws 1 then 3, B draws 2. A keeps the 3 and ranks first.
     expect(assignRandomPoints(['A', 'B', 'A'], () => 1)).toEqual([
-      { entrant: 'A', points: 2 },
-      { entrant: 'B', points: 1 },
+      { entrant: 'A', points: 2, draws: [3, 1] },
+      { entrant: 'B', points: 1, draws: [2] },
     ]);
 
     for (let i = 0; i < 50; i++) {

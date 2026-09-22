@@ -16,6 +16,7 @@ export type Award = {
   awarded_at: string;
   /** Set when the entrant held a timing medal (first, last or middle to post) and drew a bonus entry. */
   medal?: MedalKind;
+  draws?: number[];
 };
 
 export type WeeklyKing = { winners: string[]; points: number; crowned_at: string };

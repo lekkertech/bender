@@ -388,6 +388,56 @@ describe('Boom feature integration-like behavior', () => {
     expect(text).toContain(':hadeda-boom: 1) User U4 +1pt :sports_medal:');
   });
 
+  it('posts an audit of every draw as a thread reply under the daily results', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    const posts = ['12:00:01', '12:00:30', '12:02:00', '12:09:00'];
+    for (const [i, hms] of posts.entries()) {
+      await t.triggerMessage({ text: ':boom:', user: `U${i + 1}`, channel: 'C1', ts: toTs(`2025-03-03T${hms}`) });
+    }
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:05') });
+    await closeWindows();
+
+    const results = postsMatching(t, 'Boom Game — Daily Podium');
+    expect(results.length).toBe(1);
+    expect(results[0].thread_ts).toBeUndefined();
+
+    const audit = postsMatching(t, 'How the draw works');
+    expect(audit.length).toBe(1);
+    expect(audit[0]).toMatchObject({ channel: 'C1', thread_ts: '1.23' });
+    const text = audit[0].text as string;
+
+    const boom = readStore().awards['2025-03-03'].boom;
+    expect(text).toContain(':boom: 4 players, 7 tickets (4 + 3 bonus)');
+    expect(text).toContain('halfway 12:04:30.500');
+    for (const a of boom) {
+      const tickets = [...a.draws].sort((x: number, y: number) => y - x);
+      expect(tickets.length).toBe(a.medal ? 2 : 1);
+      expect(text).toContain(`User ${a.user_id}`);
+      expect(text).toMatch(new RegExp(`User ${a.user_id} .*ticket.* ${tickets.join(', ')}.* ${a.points}pt`));
+    }
+    expect(text).toMatch(/User U1 .*posted 12:00:01\.000 .*first/);
+    expect(text).toMatch(/User U3 .*posted 12:02:00\.000 .*middle/);
+    expect(text).toMatch(/User U4 .*posted 12:09:00\.000 .*last/);
+    expect(text).toMatch(/User U2 .*posted 12:00:30\.000 · ticket \d+ →/);
+    expect(text).toContain(':hadeda-boom: 1 player, 2 tickets (1 + 1 bonus)');
+
+    const kept = boom.map((a: any) => Math.max(...a.draws));
+    expect([...kept].sort((x, y) => y - x)).toEqual(kept);
+  });
+
+  it('never re-posts the results when the audit thread reply fails', async () => {
+    const t = bootAt('2025-03-03T12:00:00');
+    await t.triggerMessage({ text: ':boom:', user: 'U1', channel: 'C1', ts: toTs('2025-03-03T12:00:01') });
+    await t.triggerMessage({ text: ':hadeda-boom:', user: 'U2', channel: 'C1', ts: toTs('2025-03-03T12:00:02') });
+    t.control.failIf = (args: any) => Boolean(args.thread_ts);
+    await closeWindows();
+
+    await t.triggerMessage({ text: 'hello', user: 'U9', channel: 'C1', ts: toTs('2025-03-03T12:40:00') });
+    expect(postsMatching(t, 'Boom Game — Daily Podium').length).toBe(1);
+    expect(postsMatching(t, 'How the draw works').length).toBe(0);
+    expect(readStore().daily_announced['2025-03-03']).toBeDefined();
+  });
+
   it('marks the first, last and middle to post with a timing medal, and says so in the results', async () => {
     const t = bootAt('2025-03-03T12:00:00');
     // Halfway between 12:00:10 and 12:09:00 is 12:04:35: U3 at 12:04:30 is nearer than U4 at 12:06:00

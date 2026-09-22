@@ -46,7 +46,8 @@ set of handlers is installed; there is no runtime branch between them.
 | `src/features/boom/index.ts` | Constructs the `Store` and delegates to one orchestration. |
 | `src/features/boom/legacy/index.ts` | 3-2-1 podium: the noon hour is the window, a game closes on three unique entrants, announcement is held for `BOOM_ANNOUNCE_GRACE_MS`. |
 | `src/features/boom/random/index.ts` | Randomised points: a fixed 12:00-12:10 window, every unique entrant draws a distinct value in 1..n when it settles; the first, last and middle to post draw twice and keep the better draw. |
-| `src/features/boom/random/announce.ts` | The randomised path's results post and Friday crown. |
+| `src/features/boom/random/announce.ts` | The randomised path's results post, its draw audit thread reply, and Friday crown. |
+| `src/features/boom/random/audit.ts` | Renders the draw audit: per game, each player's post time, medal, tickets drawn and points. |
 | `src/features/boom/leaderboard.ts` | The `app_mention` leaderboard, shared by both, parameterised by the mode's catch-up. |
 | `src/features/boom/rules.ts` | Pure date, emoji and window helpers for both mechanisms. |
 | `src/features/boom/store.ts` | JSON persistence for both, plus the per-date mode stamp. |
