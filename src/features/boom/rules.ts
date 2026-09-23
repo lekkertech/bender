@@ -65,7 +65,7 @@ export function neededGamesForDate(date: string): Game[] {
  * Give each of the n distinct entrants a unique random point value in 1..n: one entrant gets n,
  * another n-1, down to 1 for the last. Returns entries sorted by points descending.
  *
- * An entrant listed more than once (a timing medallist's bonus entry) draws once per listing and
+ * An entrant listed more than once (a middle medallist's bonus entry) draws once per listing and
  * keeps its best draw; the distinct entrants are then ranked by that draw and scored n..1, so the
  * bonus lifts the odds of a high rank without raising the ceiling above the entrant count.
  */

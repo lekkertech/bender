@@ -76,7 +76,7 @@ posts its emoji inside one fixed window, then hands out points at random.
   - The assignment is written once to `awards[date][game]` and is never re-rolled — restarts,
     re-announcements and leaderboard queries all read the same stored result.
   - Medal reactions go out in one pass per game: `:first_place_medal:` … to the three biggest
-    point earners' messages, then `:sports_medal:` to every timing medallist's message.
+    point earners' messages, then `:sports_medal:` to every middle medallist's message.
     Because the awards are flushed before the reactions are sent, medals are marked done in
     `medalled[date][game]` only once every reaction has landed; a crash or Slack failure in between
     leaves them outstanding and the next catch-up re-applies them. A medal already on the message
@@ -148,7 +148,7 @@ Key points:
   - Podium helpers (`getPlacements`, `placementsCount`, `getPodiumMessages`, `PODIUM_WEIGHTS`) serve legacy mode and score any date stamped `legacy`.
 - Data model:
   - Raw message ledger stored under `messages[date][game]` (each item: `user_id`, `channel_id`, `message_ts`, `created_at`).
-  - Settled scores stored under `awards[date][game]` (each item: `user_id`, `points`, `channel_id`, `message_ts`, `awarded_at`, and `medal` on a timing medallist: `first`, `last` or `middle`).
+  - Settled scores stored under `awards[date][game]` (each item: `user_id`, `points`, `channel_id`, `message_ts`, `awarded_at`, and `medal: "middle"` on a medallist; awards settled before 2026-09-24 may carry `first` or `last`).
   - `medalled[date][game]` records when medal reactions were successfully applied.
   - `scoring[date]` records which mechanism scored a date, written by `addEntry` (`random`) or `addPlacement` (`legacy`).
   - `random_scoring_from` is a read-only remnant of an earlier build's one-way cutover; nothing writes it any more.

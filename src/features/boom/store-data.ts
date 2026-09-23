@@ -14,7 +14,6 @@ export type Award = {
   channel_id: string;
   message_ts: string;
   awarded_at: string;
-  /** Set when the entrant held a timing medal (first, last or middle to post) and drew a bonus entry. */
   medal?: MedalKind;
   draws?: number[];
 };

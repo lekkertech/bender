@@ -4,7 +4,6 @@ import { announceDay } from './announce.js';
 
 const SWEEP_INTERVAL_MS = 30 * 1000;
 const PODIUM_MEDALS = ['first_place_medal', 'second_place_medal', 'third_place_medal'] as const;
-/** Marks the first, last and middle to post: the entrants whose bonus entry went into the draw. */
 const TIMING_MEDAL = 'sports_medal';
 
 export type Io = { client: any; logger?: any };
@@ -106,7 +105,6 @@ async function addMedal(client: any, award: Award, medal: string): Promise<unkno
   }
 }
 
-/** Podium medals for the three biggest earners (awards are sorted by points), then a timing medal each. */
 function medalTargets(awards: Award[]): Array<{ award: Award; medal: string }> {
   const podium = PODIUM_MEDALS.flatMap((medal, i) => (awards[i] ? [{ award: awards[i]!, medal }] : []));
   const timing = awards.filter((a) => a.medal).map((award) => ({ award, medal: TIMING_MEDAL }));
