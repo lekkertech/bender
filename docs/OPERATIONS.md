@@ -50,20 +50,22 @@ posts its emoji inside one fixed window, then hands out points at random.
     therefore equals the number of entrants.
   - Any game emoji outside the window — before 12:00, after 12:10, or later in the noon hour —
     gets `:clown_face:` and scores nothing.
-- Timing medals:
-  - When the window shuts, each game's entrants are sorted by message `ts` and up to three
-    **timing medallists** are picked: the **first** to post, the **last** to post, and the
-    **middle**. The middle is found by taking the exact halfway point between the first and last
-    timestamps, then looking at the nearest entrant before it and the nearest after it. First and
-    last are discarded as candidates. Nobody left: no middle medal. One left: they get it. Two
-    left: the closer one gets it, and an exact tie is settled by the same random source as the
-    points draw (`timingMedals` in `rules.ts`).
-  - So one entrant holds one medal (first), two hold first and last, and three or more hold all
-    three. Medals are per game: `boom`, `hadeda` and `wednesday` each pick their own.
-  - Medals are decided from the stored timestamps at settle time, never on arrival, so late or
-    out-of-order delivery cannot hand "first" to the wrong person. The medallists are recorded on
-    the awards (`medal: "first" | "last" | "middle"`); the `:sports_medal:` reaction is only a display of
-    that record, and a reaction someone adds by hand changes nothing.
+- Middle medals:
+  - When the window shuts, each game's entrants are sorted by message `ts` and the three in the
+    middle of that posting order get a medal (`middleMedals` in `rules.ts`).
+  - Odd player count: the exact centre three. With 7 players that is posts 3, 4 and 5.
+  - Even player count: the centre two always, plus the post just before or just after them,
+    chosen by the same random source as the points draw. With 6 players that is posts 2-4 or 3-5.
+  - Three or fewer players: everyone gets a medal. Medals are per game: `boom`, `hadeda` and
+    `wednesday` each pick their own.
+  - The rule is position-based so it cannot be won by timing. Nobody knows the final player count
+    while the window is open, so no posting time secures a middle place. The first and last to
+    post never get a medal once five or more play, which removes the payoff for racing to post at
+    12:00:00 or sniping 12:09:59.
+  - Medals are decided from the stored timestamps at settle time, never on arrival. The medallists
+    are recorded on the awards as `medal: "middle"`. Awards settled before 2026-09-24 may carry
+    `"first"` or `"last"` from the earlier timing rule. The `:sports_medal:` reaction is only a
+    display of that record, and a reaction someone adds by hand changes nothing.
 - Point assignment:
   - Each medallist is listed twice in the draw. With `n` entrants and `k` medallists that is
     `n + k` entries, each drawing a distinct value. An entrant listed twice keeps their better
@@ -84,8 +86,8 @@ posts its emoji inside one fixed window, then hands out points at random.
   - Daily results post once every game required that day has settled (Wednesdays require
     `wednesday` too). The Friday crown follows the Friday results.
   - A draw audit follows as a thread reply under the results post. Per game it shows the player
-    and ticket counts, the halfway time used for the middle medal, and for each player the post
-    time to the millisecond, any medal, every ticket drawn, the ticket kept and the points. It is
+    and ticket counts, which post positions got medals, and for each player their post position,
+    post time to the millisecond, any medal, every ticket drawn, the ticket kept and the points. It is
     rendered from `awards[date][game][].draws`, the tickets each player drew, stored at settle
     time. A game settled before draws were stored renders as "scored before draws were recorded".
     The results are marked announced before the audit posts, so a failed audit post is logged and

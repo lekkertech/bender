@@ -9,7 +9,7 @@ import {
   inEntryWindow,
   localDayInfo,
   neededGamesForDate,
-  timingMedals,
+  middleMedals,
   windowClosesAtMs,
   windowOpensAtMs,
   windowSettlesAtMs,
@@ -187,52 +187,48 @@ describe('assignRandomPoints', () => {
   });
 });
 
-describe('timingMedals', () => {
-  const BASE = 1740996000;
-  const entrant = (user_id: string, offset: number) => ({ user_id, message_ts: (BASE + offset).toFixed(6) });
-  const medalsOf = (offsets: number[], rng?: () => number) => {
-    const sorted = offsets.map((o, i) => entrant(`U${i + 1}`, o));
-    return Object.fromEntries(Array.from(timingMedals(sorted, rng), ([e, kind]) => [e.user_id, kind]));
+describe('middleMedals', () => {
+  const entrant = (i: number) => ({ user_id: `U${i}`, message_ts: (1740996000 + i).toFixed(6) });
+  const medalled = (n: number, rng?: () => number) => {
+    const sorted = Array.from({ length: n }, (_, i) => entrant(i + 1));
+    return Array.from(middleMedals(sorted, rng).keys()).map((e) => Number(e.user_id.slice(1)));
   };
 
-  it('awards nothing with no entrants', () => {
-    expect(medalsOf([])).toEqual({});
+  it('medals every entrant when three or fewer play', () => {
+    expect(medalled(0)).toEqual([]);
+    expect(medalled(1)).toEqual([1]);
+    expect(medalled(2)).toEqual([1, 2]);
+    expect(medalled(3)).toEqual([1, 2, 3]);
   });
 
-  it('gives a solo entrant one medal, and two entrants first and last', () => {
-    expect(medalsOf([10])).toEqual({ U1: 'first' });
-    expect(medalsOf([10, 562])).toEqual({ U1: 'first', U2: 'last' });
+  it('medals the exact centre three positions for an odd count', () => {
+    expect(medalled(5)).toEqual([2, 3, 4]);
+    expect(medalled(7)).toEqual([3, 4, 5]);
+    expect(medalled(9)).toEqual([4, 5, 6]);
   });
 
-  it('gives three entrants all three medals', () => {
-    expect(medalsOf([10, 500, 562])).toEqual({ U1: 'first', U2: 'middle', U3: 'last' });
+  it('medals the centre pair plus one neighbour chosen by rng for an even count', () => {
+    expect(medalled(4, () => 0)).toEqual([1, 2, 3]);
+    expect(medalled(4, () => 0.9)).toEqual([2, 3, 4]);
+    expect(medalled(6, () => 0)).toEqual([2, 3, 4]);
+    expect(medalled(6, () => 0.9)).toEqual([3, 4, 5]);
+    expect(medalled(8, () => 0)).toEqual([3, 4, 5]);
+    expect(medalled(8, () => 0.9)).toEqual([4, 5, 6]);
   });
 
-  it('gives the middle to the entrant nearest the halfway point between first and last', () => {
-    // Halfway is 286s. The only candidate after it is the last entrant, who is discarded.
-    expect(medalsOf([10, 60, 270, 562])).toEqual({ U1: 'first', U3: 'middle', U4: 'last' });
-    // Nearest before (60, 226s away) loses to nearest after (300, 14s away).
-    expect(medalsOf([10, 60, 300, 562])).toEqual({ U1: 'first', U3: 'middle', U4: 'last' });
-    // Only the nearest on each side is a candidate: 3 beats 0..2 as well as the discarded last.
-    expect(medalsOf([0, 1, 2, 3, 100])).toEqual({ U1: 'first', U4: 'middle', U5: 'last' });
+  it('never medals the first or last to post once five or more play', () => {
+    for (let n = 5; n <= 20; n++) {
+      for (const r of [0, 0.9]) {
+        const got = medalled(n, () => r);
+        expect(got).toHaveLength(3);
+        expect(got).not.toContain(1);
+        expect(got).not.toContain(n);
+      }
+    }
   });
 
-  it('settles an exact tie for the middle on the rng', () => {
-    // Halfway is 200s; 100 and 300 are both 100s away.
-    expect(medalsOf([0, 100, 300, 400], () => 0)).toEqual({ U1: 'first', U2: 'middle', U4: 'last' });
-    expect(medalsOf([0, 100, 300, 400], () => 0.9)).toEqual({ U1: 'first', U3: 'middle', U4: 'last' });
-  });
-
-  it('sees an exact microsecond tie on real Slack timestamps', () => {
-    const sorted = [
-      { user_id: 'U1', message_ts: '1757409424.623851' },
-      { user_id: 'U2', message_ts: '1757409627.294299' },
-      { user_id: 'U3', message_ts: '1757409689.490159' },
-      { user_id: 'U4', message_ts: '1757409892.160607' },
-    ];
-    const winner = (rng: () => number) =>
-      Array.from(timingMedals(sorted, rng)).find(([, kind]) => kind === 'middle')![0].user_id;
-    expect(winner(() => 0)).toBe('U2');
-    expect(winner(() => 0.9)).toBe('U3');
+  it('labels every medal as middle', () => {
+    const sorted = Array.from({ length: 5 }, (_, i) => entrant(i + 1));
+    expect(new Set(middleMedals(sorted).values())).toEqual(new Set(['middle']));
   });
 });

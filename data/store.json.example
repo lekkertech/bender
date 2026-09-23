@@ -48,7 +48,7 @@
           "channel_id": "C0123456789",
           "message_ts": "1757325601.400500",
           "awarded_at": "2025-09-08T10:05:00.100Z",
-          "medal": "last",
+          "medal": "middle",
           "draws": [3, 1]
         },
         {
@@ -57,7 +57,7 @@
           "channel_id": "C0123456789",
           "message_ts": "1757325600.100200",
           "awarded_at": "2025-09-08T10:05:00.100Z",
-          "medal": "first",
+          "medal": "middle",
           "draws": [4, 2]
         }
       ]

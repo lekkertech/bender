@@ -7,7 +7,7 @@ import {
   GAMES,
   isFriday,
   neededGamesForDate,
-  timingMedals,
+  middleMedals,
   windowSettlesAtMs,
   TZ,
   weekKeyFor,
@@ -178,9 +178,7 @@ export class Store {
     const entrants = earliestFor(this.data, date, game);
     if (!entrants.length && nowMs < windowSettlesAtMs(date)) return [];
 
-    // Timing medallists (first, last, middle to post) are listed twice, so they draw twice and keep
-    // their better draw; the distinct entrants are then scored n..1 as ever.
-    const medals = timingMedals(entrants, rng);
+    const medals = middleMedals(entrants, rng);
     const awarded_at = DateTime.now().toISO()!;
     const bonus = entrants.filter((e) => medals.has(e));
     const awards = assignRandomPoints([...entrants, ...bonus], rng).map((drawn) =>

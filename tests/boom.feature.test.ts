@@ -390,7 +390,7 @@ describe('Boom feature integration-like behavior', () => {
 
   it('posts an audit of every draw as a thread reply under the daily results', async () => {
     const t = bootAt('2025-03-03T12:00:00');
-    const posts = ['12:00:01', '12:00:30', '12:02:00', '12:09:00'];
+    const posts = ['12:00:01', '12:00:30', '12:02:00', '12:05:00', '12:09:00'];
     for (const [i, hms] of posts.entries()) {
       await t.triggerMessage({ text: ':boom:', user: `U${i + 1}`, channel: 'C1', ts: toTs(`2025-03-03T${hms}`) });
     }
@@ -407,19 +407,19 @@ describe('Boom feature integration-like behavior', () => {
     const text = audit[0].text as string;
 
     const boom = readStore().awards['2025-03-03'].boom;
-    expect(text).toContain(':boom: 4 players, 7 tickets (4 + 3 bonus)');
-    expect(text).toContain('halfway 12:04:30.500');
+    expect(text).toContain(':boom: 5 players, 8 tickets (5 + 3 bonus), medals to posts 2-4 of 5');
     for (const a of boom) {
       const tickets = [...a.draws].sort((x: number, y: number) => y - x);
       expect(tickets.length).toBe(a.medal ? 2 : 1);
       expect(text).toContain(`User ${a.user_id}`);
       expect(text).toMatch(new RegExp(`User ${a.user_id} .*ticket.* ${tickets.join(', ')}.* ${a.points}pt`));
     }
-    expect(text).toMatch(/User U1 .*posted 12:00:01\.000 .*first/);
-    expect(text).toMatch(/User U3 .*posted 12:02:00\.000 .*middle/);
-    expect(text).toMatch(/User U4 .*posted 12:09:00\.000 .*last/);
-    expect(text).toMatch(/User U2 .*posted 12:00:30\.000 · ticket \d+ →/);
-    expect(text).toContain(':hadeda-boom: 1 player, 2 tickets (1 + 1 bonus)');
+    expect(text).toMatch(/User U1 · posted #1 at 12:00:01\.000 · ticket \d+ →/);
+    for (const [u, post, hms] of [['U2', 2, '12:00:30'], ['U3', 3, '12:02:00'], ['U4', 4, '12:05:00']]) {
+      expect(text).toMatch(new RegExp(`User ${u} · posted #${post} at ${hms}\\.000 · middle :sports_medal:`));
+    }
+    expect(text).toMatch(/User U5 · posted #5 at 12:09:00\.000 · ticket \d+ →/);
+    expect(text).toContain(':hadeda-boom: 1 player, 2 tickets (1 + 1 bonus), medals to post 1 of 1');
 
     const kept = boom.map((a: any) => Math.max(...a.draws));
     expect([...kept].sort((x, y) => y - x)).toEqual(kept);
@@ -438,9 +438,8 @@ describe('Boom feature integration-like behavior', () => {
     expect(readStore().daily_announced['2025-03-03']).toBeDefined();
   });
 
-  it('marks the first, last and middle to post with a timing medal, and says so in the results', async () => {
+  it('marks the middle three to post with a medal, and says so in the results', async () => {
     const t = bootAt('2025-03-03T12:00:00');
-    // Halfway between 12:00:10 and 12:09:00 is 12:04:35: U3 at 12:04:30 is nearer than U4 at 12:06:00
     const times: Record<string, string> = {
       U1: '12:00:10', U2: '12:01:00', U3: '12:04:30', U4: '12:06:00', U5: '12:09:00',
     };
@@ -455,22 +454,22 @@ describe('Boom feature integration-like behavior', () => {
     await closeWindows();
 
     const medalled = reactions(t, 'sports_medal').map((r) => r.timestamp).sort();
-    const expected = [times.U1, times.U3, times.U5].map((time) => toTs(`2025-03-03T${time}`));
+    const expected = [times.U2, times.U3, times.U4].map((time) => toTs(`2025-03-03T${time}`));
     expect(medalled).toEqual([...expected, ...hadedaTs].sort());
 
     // The bot tracks medallists in the awards, not by reading reactions back
     const awards = readStore().awards['2025-03-03'];
     const labels = (game: string) => Object.fromEntries(awards[game].map((a: any) => [a.user_id, a.medal]));
-    expect(labels('boom')).toEqual({ U1: 'first', U3: 'middle', U5: 'last', U2: undefined, U4: undefined });
-    expect(labels('hadeda')).toEqual({ U6: 'first', U7: 'last' });
+    expect(labels('boom')).toEqual({ U1: undefined, U2: 'middle', U3: 'middle', U4: 'middle', U5: undefined });
+    expect(labels('hadeda')).toEqual({ U6: 'middle', U7: 'middle' });
     // Still exactly 1..n: the bonus entry lifts the odds, not the ceiling
     expect(awards.boom.map((a: any) => a.points).sort()).toEqual([1, 2, 3, 4, 5]);
 
     const text = postsMatching(t, 'Boom Game — Daily Podium')[0].text as string;
     const boomLine = text.split('\n').find((l) => l.startsWith('• :boom: '))!;
     expect(boomLine.match(/:sports_medal:/g)).toHaveLength(3);
-    for (const u of ['U1', 'U3', 'U5']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt :sports_medal:`));
-    for (const u of ['U2', 'U4']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt(?! :sports_medal:)`));
+    for (const u of ['U2', 'U3', 'U4']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt :sports_medal:`));
+    for (const u of ['U1', 'U5']) expect(boomLine).toMatch(new RegExp(`User ${u} \\+\\dpt(?! :sports_medal:)`));
     expect(parseAwards(text, ':boom:').map((a) => a.name).sort()).toEqual(['User U1', 'User U2', 'User U3', 'User U4', 'User U5']);
   });
 

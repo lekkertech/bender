@@ -92,43 +92,22 @@ export function assignRandomPoints<T>(
 
 export type MedalKind = 'first' | 'last' | 'middle';
 
-/**
- * Timing medals for a game's entrants, given in message-ts order: the first and last to post, and
- * the entrant nearest the halfway point between them. First and last are never the middle, so one
- * entrant holds one medal, two hold first and last, and three or more hold all three. An entrant
- * exactly as far before the halfway point as another is after it loses or wins the middle on `rng`.
- */
-export function timingMedals<T extends { message_ts: string }>(
-  sorted: readonly T[],
-  rng: () => number = Math.random,
-): Map<T, MedalKind> {
-  const medals = new Map<T, MedalKind>();
-  if (!sorted.length) return medals;
-  const first = sorted[0]!;
-  const last = sorted[sorted.length - 1]!;
-  medals.set(first, 'first');
-  if (last !== first) medals.set(last, 'last');
-  const middle = middleOf(sorted, rng);
-  if (middle) medals.set(middle, 'middle');
-  return medals;
+const MIDDLE_MEDALS = 3;
+
+function middleStart(n: number, rng: () => number): number {
+  const centreLow = Math.floor((n - MIDDLE_MEDALS) / 2);
+  if (n % 2 === 1) return centreLow;
+  return rng() < 0.5 ? centreLow : centreLow + 1;
+}
+
+export function middleMedals<T>(sorted: readonly T[], rng: () => number = Math.random): Map<T, MedalKind> {
+  const start = sorted.length <= MIDDLE_MEDALS ? 0 : middleStart(sorted.length, rng);
+  return new Map(sorted.slice(start, start + MIDDLE_MEDALS).map((e) => [e, 'middle' as MedalKind]));
 }
 
 export function tsMicros(message_ts: string): number {
   const [seconds, fraction = ''] = message_ts.split('.');
   return Number(seconds) * 1_000_000 + Number(fraction.padEnd(6, '0').slice(0, 6));
-}
-
-function middleOf<T extends { message_ts: string }>(sorted: readonly T[], rng: () => number): T | null {
-  const interior = sorted.slice(1, -1);
-  if (!interior.length) return null;
-  const ts = (e: T) => tsMicros(e.message_ts);
-  const twiceHalfway = ts(sorted[0]!) + ts(sorted[sorted.length - 1]!);
-  const before = interior.filter((e) => 2 * ts(e) <= twiceHalfway).pop();
-  const after = interior.find((e) => 2 * ts(e) > twiceHalfway);
-  if (!before || !after) return before || after || null;
-  const lead = ts(after) + ts(before) - twiceHalfway;
-  if (lead !== 0) return lead > 0 ? before : after;
-  return rng() < 0.5 ? before : after;
 }
 
 /** Boom is only played Mon-Fri, excluding public holidays. */

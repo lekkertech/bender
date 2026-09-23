@@ -1,7 +1,7 @@
 # ADR 0002: Timing medals give the first, last and middle to post a bonus entry
 
 Date: 2026-09-21
-Status: Accepted
+Status: Superseded in part by ADR 0003 (who gets a medal). The bonus-entry draw still applies.
 
 ## Context
 
